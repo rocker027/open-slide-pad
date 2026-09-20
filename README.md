@@ -1,0 +1,58 @@
+# SlideRust
+
+以 Rust 製作的 macOS 側邊瀏覽器，參考 [Slidepad](https://slidepad.app/) 的操作概念，採獨立介面與實作。網站使用 macOS 原生 **WKWebView**；視窗、狀態、快捷鍵與保存由 Rust 管理。HTML/CSS/JavaScript 僅用於本機控制面板，不需要 Node.js。
+
+<img src="docs/preview.png" width="360" alt="SlideRust macOS 原生視窗實際畫面">
+
+## 執行
+
+需求：macOS 13+、Rust 1.88+、Xcode Command Line Tools。實測機器為 Apple Silicon／macOS 15.6.1；Intel 尚未實測。
+
+```sh
+cargo run --locked
+# 建置可直接開啟的 app
+./scripts/bundle.sh
+open dist/SlideRust.app
+```
+
+可將 `dist/SlideRust.app` 拖進「應用程式」。產物為本機 ad-hoc 簽章，未做 Apple Developer ID 公證；未發行至 App Store。
+
+## 操作
+
+- 游標停在螢幕右緣約 0.18 秒，側欄淡入滑出。設定可改為左側。
+- 游標進入面板後移開約 0.65 秒，自動收合；圖釘可固定顯示。
+- **⌘⇧Space** 或選單列的 **◧** 可顯示／收合。
+- **＋** 新增網站或搜尋；左側切換網站，各網站的 WebView 保持在記憶體中，初次選取才載入，最多 20 個。
+- 網址列、上一頁、下一頁、重新整理及「在預設瀏覽器開啟」。
+- 設定可調整左右位置、360–960 pt 寬度、hot edge、釘選及移除網站。
+- 原生快捷鍵在網站聚焦時也可用：**⌘L** 選取網址、**⌘T** 新增、**⌘R** 重新整理、**⌘[／⌘]** 返回／前進、**⌘1–9** 切換前九個網站、**⌘,** 開啟設定、**⌘W** 收合。
+- 設定中的「編輯」可重新命名，**↑／↓** 可調整網站順序，重啟後保留。
+- 移除網站後，底部的「復原移除」可恢復最近一次移除的捷徑。此紀錄僅保留於本次執行；不恢復原網站尚未提交的輸入內容。
+- **Esc** 在本機控制面板聚焦時關閉面板／收合；網站內 Esc 由網站處理。
+- 關閉視窗只會收合；選單列「結束 SlideRust」才會退出。
+
+## 資料與信任邊界
+
+`directories::ProjectDirs` 將設定放在 `~/Library/Application Support/app.sliderust.SlideRust/`。設定是 version 1 的 `settings.json`，以同目錄暫存檔＋原子 rename 保存。檔案鎖阻止同一資料目錄的第二個程序覆寫設定。損毀或未支援版本會停止啟動，保留原檔供修復；最多讀取 256 KiB。原子替換前寫入失敗不變更畫面狀態；替換成功但目錄同步失敗時，畫面採用已寫入的新設定，並顯示耐久性警告。
+
+網站登入與 cookies 交由此 app 的 WebKit 預設資料存放區管理，與 Safari 的登入分開。所有網站共用同一個 profile；移除捷徑不清除網站資料。網址列明確提交的網址會保存；頁面自動導向與 OAuth URL 不寫回設定。
+
+遠端 WebView 沒有控制 IPC。控制面板不允許遠端導覽、iframe 或網路請求，所有網站標題以文字呈現。僅支援 HTTP/HTTPS；不執行 `file:`、`javascript:` 或外部 app scheme。
+
+## 驗證
+
+```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+# 必須使用獨立目錄；smoke 使用無痕 WebKit，最長約 25 秒
+cargo run --locked -- --smoke-test --data-dir "$(mktemp -d)"
+```
+
+smoke 驗證原生視窗、本機控制 IPC、example.com 載入、同文件 pushState，以及原生選單 ⌘L／⌘T／⌘W 的命令路由、原生 responder、DOM 焦點與收合。測試直接呼叫 app 內的 AppKit 選單契約，不送出系統鍵盤輸入。它不是完整 UI E2E，不會登入帳號或提交表單。
+
+## 目前邊界
+
+尚無 iCloud、Safari 擴充、MCP、多帳號 profile、下載管理、通知、登入時啟動及自動更新。`target=_blank`／新視窗要求會在原網站分頁開啟；需要 popup opener 的 OAuth 流程可能不相容，請使用「在預設瀏覽器開啟」。攝影機／麥克風流程未支援。所有網站的登入相容性、全螢幕 Spaces、實體多螢幕與 Intel 機器尚未全面驗證。
+
+研究、取捨與來源見 [docs/research.md](docs/research.md)，負向驗收見 [docs/security-tests.md](docs/security-tests.md)。
