@@ -2,7 +2,11 @@
 
 以 Rust 製作的 macOS 側邊瀏覽器，參考 [Slidepad](https://slidepad.app/) 的操作概念，採獨立介面與實作。網站使用 macOS 原生 **WKWebView**；視窗、狀態、快捷鍵與保存由 Rust 管理。HTML/CSS/JavaScript 僅用於本機控制面板，不需要 Node.js。
 
-<img src="docs/preview.png" width="360" alt="Open Slide Pad macOS 原生視窗實際畫面">
+<img src="resources/AppIcon.png" width="80" alt="Open Slide Pad 滑出面板圖示">
+
+<img src="docs/preview-light.png" width="300" alt="淺色首頁，示範網站資料"> <img src="docs/preview-dark.png" width="300" alt="深色首頁，示範網站資料">
+
+暖灰與陶土色介面，跟隨 macOS 明暗外觀。首頁直接開啟已加入的網站；設計決策、圖示原稿與重建方式見 [視覺設計](docs/design.md)，[原生視窗實際畫面](docs/preview.png)。
 
 ## 執行
 
@@ -24,6 +28,7 @@ open "dist/Open Slide Pad.app"
 - 預設 **⌘⇧Space** 或選單列的 **◧** 可顯示／收合。
 - 在 **設定 → 顯示／收合快捷鍵** 選擇修飾鍵與主鍵，按「套用快捷鍵」即可立即更換，下次啟動也會保留。「恢復預設」會改回 **⌘⇧Space**。
 - 快捷鍵支援 A–Z、0–9、空白鍵、F1–F20，至少包含 ⌘、⌥、⌃ 之一。App／文字編輯的既有快捷鍵會保留；系統回報組合已占用時，保留原快捷鍵並顯示錯誤。若啟動時註冊失敗，可用選單列開啟設定再換一組；部分系統保留組合不一定會回報衝突，請避免使用 macOS 既有快捷鍵。
+- 首頁列出已加入的網站與網域，按任一列即可開啟；「加入常用服務」可展開快速新增建議。
 - **＋** 新增網站或搜尋；左側切換網站，各網站的 WebView 保持在記憶體中，初次選取才載入，最多 20 個。
 - 網址列、上一頁、下一頁、重新整理及「在預設瀏覽器開啟」。
 - 設定可調整左右位置、360–960 pt 寬度、hot edge、釘選及移除網站。
@@ -55,7 +60,7 @@ cargo run --locked -- --smoke-test --data-dir "$(mktemp -d)"
 
 smoke 驗證原生視窗、本機控制 IPC、example.com 載入、同文件 pushState，以及原生選單 ⌘L／⌘T／⌘W 的命令路由、原生 responder、DOM 焦點與收合。測試直接呼叫 app 內的 AppKit 選單契約，不送出系統鍵盤輸入。另驗證快捷鍵設定表單 IPC、原生 F18／F19 組合來回註冊、即時保存、過期快捷鍵 ID 過濾與畫面提示同步。亦驗證原生視窗 resize 事件、網頁尺寸、尺寸保存、唯讀目錄下回復與恢復全高。它不是完整 UI E2E，不送出實際滑鼠拖曳，不會登入帳號或提交外部表單。
 
-快捷鍵負向測試包含註冊衝突、保存失敗回復、提交後同步警告與解除失敗警告。`node scripts/test-shortcut-ui.cjs` 可重跑「恢復預設」的表單回歸測試。
+快捷鍵負向測試包含註冊衝突、保存失敗回復、提交後同步警告與解除失敗警告。`node scripts/test-shortcut-ui.cjs` 可重跑快捷鍵重設、尺寸控制命令與首頁網站清單的回歸測試。
 
 ## 目前邊界
 

@@ -1,26 +1,44 @@
 import AppKit
 
-// 可重建的原生向量圖示；不使用外部品牌資產。
-let size = NSSize(width: 1024, height: 1024)
-let icon = NSImage(size: size)
-icon.lockFocus()
-NSColor(calibratedRed: 0.07, green: 0.095, blue: 0.075, alpha: 1).setFill()
-NSBezierPath(roundedRect: NSRect(x: 28, y: 28, width: 968, height: 968), xRadius: 215, yRadius: 215).fill()
-let shadow = NSShadow()
-shadow.shadowColor = NSColor.black.withAlphaComponent(0.3)
-shadow.shadowBlurRadius = 32
-shadow.shadowOffset = NSSize(width: 0, height: -14)
-shadow.set()
-NSColor(calibratedRed: 0.24, green: 0.32, blue: 0.21, alpha: 1).setFill()
-NSBezierPath(roundedRect: NSRect(x: 206, y: 241, width: 425, height: 572), xRadius: 62, yRadius: 62).fill()
-NSColor(calibratedRed: 0.765, green: 0.937, blue: 0.643, alpha: 1).setFill()
-NSBezierPath(roundedRect: NSRect(x: 348, y: 178, width: 468, height: 585), xRadius: 64, yRadius: 64).fill()
-NSShadow().set()
-NSColor(calibratedRed: 0.15, green: 0.24, blue: 0.12, alpha: 1).setFill()
-NSBezierPath(roundedRect: NSRect(x: 412, y: 254, width: 75, height: 433), xRadius: 18, yRadius: 18).fill()
-NSBezierPath(roundedRect: NSRect(x: 523, y: 606, width: 216, height: 36), xRadius: 12, yRadius: 12).fill()
-NSColor(calibratedRed: 0.47, green: 0.65, blue: 0.36, alpha: 1).setFill()
-NSBezierPath(roundedRect: NSRect(x: 523, y: 530, width: 155, height: 27), xRadius: 10, yRadius: 10).fill()
-icon.unlockFocus()
-guard let tiff = icon.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("無法產生圖示") }
-try png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+// 保留設計原稿；只在封裝時產生 macOS 所需的各尺寸圖示。
+let source = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "resources/AppIcon.png"
+let destination = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "resources/AppIcon.icns"
+guard let icon = NSImage(contentsOfFile: source) else {
+    fatalError("無法讀取圖示原稿：\(source)")
+}
+let staging = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+let iconset = staging.appendingPathComponent("AppIcon.iconset")
+try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: staging) }
+
+func writeRepresentation(points: Int, scale: Int) throws {
+    let pixels = points * scale
+    guard let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+        isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+    ), let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+        fatalError("無法建立圖示畫布")
+    }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    context.imageInterpolation = .high
+    icon.draw(in: NSRect(x: 0, y: 0, width: pixels, height: pixels))
+    NSGraphicsContext.restoreGraphicsState()
+    guard let png = bitmap.representation(using: .png, properties: [:]) else {
+        fatalError("無法編碼圖示")
+    }
+    let suffix = scale == 2 ? "@2x" : ""
+    try png.write(to: iconset.appendingPathComponent("icon_\(points)x\(points)\(suffix).png"))
+}
+
+for points in [16, 32, 128, 256, 512] {
+    for scale in [1, 2] { try writeRepresentation(points: points, scale: scale) }
+}
+let conversion = Process()
+conversion.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+conversion.arguments = ["-c", "icns", iconset.path, "-o", destination]
+try conversion.run()
+conversion.waitUntilExit()
+guard conversion.terminationStatus == 0 else { fatalError("icns 封裝失敗") }
+print("已產生 \(destination)")

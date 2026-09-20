@@ -11,12 +11,12 @@
 </head>
 <body>
 <aside class="rail" aria-label="網站側欄">
-<button class="brand" title="Open Slide Pad 首頁" aria-label="首頁" data-action="home">O</button><div class="rail-divider"></div>
+<button class="brand" id="home-button" title="Open Slide Pad 首頁" aria-label="首頁" data-action="home"><svg viewBox="0 0 32 32" aria-hidden="true"><rect class="mark-frame" x="4" y="5" width="20" height="22" rx="4"/><rect class="mark-panel" x="13" y="5" width="15" height="22" rx="4"/><path class="mark-handle" d="M17 14v4"/></svg></button><div class="rail-divider"></div>
 <div class="pads" id="pads"></div>
 <button class="icon add" id="add" title="新增網站 ⌘T" aria-label="新增網站"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
 <div class="rail-divider"></div><div class="rail-bottom">
 <button class="icon" id="settings" title="設定" aria-label="設定"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/></svg></button>
-<button class="icon" data-action="hide" title="收合側欄" aria-label="收合側欄"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button></div>
+<button class="icon collapse" data-action="hide" title="收合側欄 ⌘W" aria-label="收合側欄"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button></div>
 </aside>
 <header class="toolbar">
 <div class="nav"><button class="icon" id="back" data-action="back" title="上一頁" aria-label="上一頁" disabled><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button><button class="icon" id="forward" data-action="forward" title="下一頁" aria-label="下一頁" disabled><svg viewBox="0 0 24 24"><path d="m10 6 6 6-6 6"/></svg></button><button class="icon" data-action="reload" title="重新整理" aria-label="重新整理"><svg viewBox="0 0 24 24"><path d="M20 7v5h-5M19 12a7 7 0 1 0-1 4M20 12a7 7 0 0 0-12-5"/></svg></button></div>
@@ -25,16 +25,16 @@
 <button class="icon external" data-action="external" title="在預設瀏覽器開啟" aria-label="在預設瀏覽器開啟"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4 10 14M10 4H4v16h16v-6"/></svg></button>
 </header>
 <main class="stage" id="stage"><section class="home" id="home">
-<div class="eyebrow">YOUR QUIET CORNER OF THE WEB</div><div class="hero-mark" aria-hidden="true"><div class="sheet"></div><div class="sheet front"></div></div>
-<h1>常用網站，<br>近在手邊。</h1><p class="lead">把每天會開的工具放在這裡。<br>游標輕碰螢幕邊緣，隨時接著做。</p>
-<button class="primary" id="hero-add">＋ 新增你的第一個網站 <span>↗</span></button>
-<div class="label"><span>從這裡開始</span><span>QUICK ADD</span></div>
-<div class="grid" id="quick"></div>
-<div class="tip"><span>⌘</span><div><b>不用切換，繼續專注。</b><br>按 <kbd id="home-shortcut">⌘ ⇧ Space</kbd> 呼叫側欄，移開游標自動收合。<br>需要多留一下？按上方圖釘固定。</div></div>
-<div class="version">OPEN SLIDE PAD / 0.4.1 &nbsp; · &nbsp; BUILT FOR MAC</div>
+<div class="home-brand"><span>Open Slide Pad</span><span class="edition">側邊瀏覽器</span></div>
+<div class="home-heading"><div><h1>我的網站 <span id="site-count" class="count">0</span></h1><p class="lead">常用的，留在手邊。</p></div><button class="primary" id="hero-add"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新增網站</button></div>
+<div id="saved-sites" class="saved-sites" aria-label="已加入的網站"></div>
+<div class="empty-state" id="empty-state"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="7" y="9" width="34" height="30" rx="5"/><path d="M18 9v30M24 24h10M29 19v10"/></svg><h2>從一個網站開始</h2><p>加入網址，或從下方選一個常用服務。<br>之後輕碰螢幕邊緣，就能再次開啟。</p></div>
+<details class="suggestions" id="suggestions" open><summary>加入常用服務 <span>快速加入</span></summary><div class="grid" id="quick"></div></details>
+<div class="home-help"><div><span>顯示／收合側欄</span><kbd id="home-shortcut">⌘ ⇧ Space</kbd></div><p>移開游標會自動收合。需要常駐時，按上方圖釘。</p></div>
+<div class="version">Open Slide Pad <span>0.4.1</span></div>
 </section></main>
-<footer class="status" id="status"><span class="status-text" id="status-text"><i class="dot"></i>你的網路小角落</span><button id="undo-remove" class="undo-button" data-action="undo_remove" hidden>復原移除</button><span id="status-shortcut">⌘ ⇧ Space</span></footer>
-<section class="overlay" id="overlay" hidden></section><div class="toast" id="toast" role="alert" hidden></div>
+<footer class="status" id="status"><span class="status-text" id="status-text"><i class="dot"></i>首頁</span><button id="undo-remove" class="undo-button" data-action="undo_remove" hidden>復原移除</button><span id="status-shortcut">⌘ ⇧ Space</span></footer>
+<section class="overlay" id="overlay" aria-labelledby="overlay-title" hidden></section><div class="toast" id="toast" role="alert" hidden></div>
 <button id="resize-grip" class="resize-grip" title="拖曳調整寬度與高度" aria-label="拖曳調整視窗大小"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M5 15 15 5M10 15l5-5"/></svg></button>
 <script>
 // SLIDERUST_SCRIPT

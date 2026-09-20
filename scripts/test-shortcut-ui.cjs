@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ids = new Map();
 class Element {
-  constructor(tag) { this.tagName=tag; this.children=[]; this.classList={toggle(){}}; this.textContent=''; }
+  constructor(tag) { this.tagName=tag; this.children=[]; this.classList={toggle(){}}; this.textContent=''; this.attributes={}; }
   set id(id) { this._id=id; ids.set(id,this); }
   get id() { return this._id; }
   append(...items) { for(const item of items) { item.parent=this; this.children.push(item); } }
@@ -13,15 +13,15 @@ class Element {
   replaceChildren(...items) { this.children=[]; this.append(...items); }
   get lastChild() { return this.children.at(-1); }
   get firstChild() { return this.children[0]; }
-  setAttribute() {}
+  setAttribute(name, value) { this.attributes[name]=value; }
   remove() { this.parent.children.splice(this.parent.children.indexOf(this),1); }
   focus() {} select() {}
 }
-for(const id of ['pads','home','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','resize-grip']) {
+for(const id of ['pads','home','home-button','site-count','saved-sites','empty-state','suggestions','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','resize-grip']) {
  const e=new Element('div'); e.id=id; e.append(new Element('#text'));
 }
 const sent=[];
-const ctx={window:{ipc:{postMessage(m){sent.push(JSON.parse(m));}}},document:{documentElement:{dataset:{}},createElement:t=>new Element(t),createTextNode:t=>Object.assign(new Element('#text'),{textContent:t}),getElementById:id=>ids.get(id),querySelectorAll:()=>[],addEventListener(){}},setTimeout(){},clearTimeout(){}};
+const ctx={URL,window:{ipc:{postMessage(m){sent.push(JSON.parse(m));}}},document:{documentElement:{dataset:{}},createElement:t=>new Element(t),createTextNode:t=>Object.assign(new Element('#text'),{textContent:t}),getElementById:id=>ids.get(id),querySelectorAll:()=>[],addEventListener(){}},setTimeout(){},clearTimeout(){}};
 vm.createContext(ctx);
 const sourcePath = process.argv[2] || path.join(__dirname, '../ui/app.js');
 vm.runInContext(fs.readFileSync(sourcePath, 'utf8'), ctx);
@@ -47,3 +47,26 @@ assert.equal(ctx.document.documentElement.dataset.side,'right');
 find(ids.get('overlay'),'恢復全高').onclick();
 assert.deepEqual(sent.at(-1),{action:'full_height'});
 console.log('PASS resize grip routes primary pointer and full-height commands');
+
+// 首頁使用相同的網站順序與 select IPC，最後一個網站移除後回到空狀態。
+const populated=JSON.parse(JSON.stringify(state));
+populated.settings.pads=[{id:7,title:'工作筆記',url:'https://www.notion.so/team'},
+  {id:12,title:'<img src=x onerror=alert(1)>',url:'https://example.com'}];
+ctx.window.render(populated);
+assert.equal(ids.get('site-count').textContent,'2');
+assert.equal(ids.get('empty-state').hidden,true);
+assert.equal(ids.get('suggestions').open,false);
+const sites=ids.get('saved-sites').children;
+assert.equal(sites.length,2);
+assert.equal(sites[0].children[1].children[1].textContent,'notion.so');
+assert.equal(sites[1].children[1].children[0].textContent,populated.settings.pads[1].title);
+sites[1].onclick();
+assert.deepEqual(sent.at(-1),{action:'select',id:12});
+ids.get('suggestions').open=true;
+ctx.window.render({...populated,loading:true});
+assert.equal(ids.get('suggestions').open,true,'載入狀態更新不應收起使用者開啟的建議');
+ctx.window.render(state);
+assert.equal(ids.get('empty-state').hidden,false);
+assert.equal(ids.get('saved-sites').children.length,0);
+assert.equal(ids.get('suggestions').open,true);
+console.log('PASS home list selects saved sites, preserves text and restores empty state');
