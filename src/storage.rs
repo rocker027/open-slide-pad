@@ -93,6 +93,80 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Language;
+
+    #[test]
+    fn language_defaults_to_english_and_round_trips_without_changing_existing_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.load().unwrap().language, Language::English);
+        // 英文不增加欄位，因此此檔也代表尚未選過語言的 version 1 設定。
+        let original = Settings::default()
+            .add("example.com")
+            .unwrap()
+            .rename(1, "我的網站")
+            .unwrap();
+        store.save(&original).unwrap();
+        let legacy = fs::read(&path).unwrap();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&legacy)
+                .unwrap()
+                .get("language")
+                .is_none()
+        );
+        assert_eq!(store.load().unwrap(), original);
+        assert_eq!(fs::read(&path).unwrap(), legacy, "讀取舊設定不應改寫檔案");
+        let chinese = Settings {
+            language: Language::TraditionalChinese,
+            ..original.clone()
+        };
+        store.save(&chinese).unwrap();
+        drop(store);
+        let reopened = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(reopened.load().unwrap(), chinese);
+        reopened.save(&original).unwrap();
+        drop(reopened);
+        assert_eq!(
+            SettingsStore::open(dir.path()).unwrap().load().unwrap(),
+            original
+        );
+        assert_eq!(fs::read(&path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn unknown_language_preserves_source_and_failed_save_preserves_previous_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::open(dir.path()).unwrap();
+        let original = Settings {
+            language: Language::TraditionalChinese,
+            ..Settings::default()
+        };
+        store.save(&original).unwrap();
+        let saved = fs::read(&path).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.save(&Settings {
+            language: Language::English,
+            ..original.clone()
+        });
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(store.load().unwrap(), original);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        for invalid in [
+            serde_json::json!("fr"),
+            serde_json::Value::Null,
+            serde_json::json!(1),
+        ] {
+            let mut value = serde_json::to_value(&original).unwrap();
+            value["language"] = invalid;
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(store.load().is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
 
     #[test]
     fn resized_panel_survives_restart_and_invalid_dimensions_preserve_file() {

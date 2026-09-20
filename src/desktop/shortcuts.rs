@@ -53,8 +53,7 @@ impl App {
                 }
                 self.shortcut_error = (!warnings.is_empty()).then(|| warnings.join("；"));
                 self.update_shortcut_tooltip();
-                super::chrome::toast(
-                    &self.chrome,
+                self.toast(
                     self.shortcut_error
                         .as_deref()
                         .unwrap_or("快捷鍵已套用，重新啟動後也會保留"),
@@ -74,7 +73,9 @@ impl App {
         let label = if self.shortcut_binding.active().is_some() {
             format!("Open Slide Pad · {}", self.settings.toggle_shortcut.label())
         } else {
-            "Open Slide Pad · 快捷鍵未啟用，可從設定重新套用".to_owned()
+            self.settings
+                .language
+                .text("Open Slide Pad · 快捷鍵未啟用，可從設定重新套用")
         };
         if let Err(error) = self._tray.set_tooltip(Some(label)) {
             eprintln!("無法更新選單列提示：{error}");

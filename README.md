@@ -23,6 +23,7 @@ open "dist/Open Slide Pad.app"
 
 ## 操作
 
+- 介面預設 **English**；在 **Settings → Language** 可切換 **繁體中文**，立即更新首頁、設定、提示與原生選單，重新啟動後保留選擇。既有設定尚未選過語言時也使用英文；網站內容由各網站自行決定語言。
 - 游標停在螢幕右緣約 0.18 秒，側欄淡入滑出。設定可改為左側。
 - 游標進入面板後移開約 0.65 秒，自動收合；圖釘可固定顯示。
 - 預設 **⌘⇧Space** 或選單列的 **◧** 可顯示／收合。
@@ -44,6 +45,8 @@ open "dist/Open Slide Pad.app"
 
 更名後沿用既有資料識別碼與 WebKit 設定，讓網站、快捷鍵、視窗偏好及網站資料持續使用。`directories::ProjectDirs` 將設定放在 `~/Library/Application Support/app.sliderust.SlideRust/`。設定是 version 1 的 `settings.json`，以同目錄暫存檔＋原子 rename 保存。檔案鎖阻止同一資料目錄的第二個程序覆寫設定。損毀或未支援版本會停止啟動，保留原檔供修復；最多讀取 256 KiB。原子替換前寫入失敗不變更畫面狀態；替換成功但目錄同步失敗時，畫面採用已寫入的新設定，並顯示耐久性警告。
 
+`language` 支援 `en` 與 `zh-TW`；省略時為英文，英文保存時也省略此欄位。繁中設定含新增欄位，若回退至 0.4.1 或更舊版本，請先切回英文或還原升級前備份。翻譯集中於 `ui/locales/en.json`，繁中字串作為原文鍵，Rust 與本機 UI 共用同一份目錄。
+
 網站登入與 cookies 交由此 app 的 WebKit 預設資料存放區管理，與 Safari 的登入分開。所有網站共用同一個 profile；移除捷徑不清除網站資料。網址列明確提交的網址會保存；頁面自動導向與 OAuth URL 不寫回設定。
 
 遠端 WebView 沒有控制 IPC。控制面板不允許遠端導覽、iframe 或網路請求，所有網站標題以文字呈現。僅支援 HTTP/HTTPS；不執行 `file:`、`javascript:` 或外部 app scheme。
@@ -58,9 +61,9 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo run --locked -- --smoke-test --data-dir "$(mktemp -d)"
 ```
 
-smoke 驗證原生視窗、本機控制 IPC、example.com 載入、同文件 pushState，以及原生選單 ⌘L／⌘T／⌘W 的命令路由、原生 responder、DOM 焦點與收合。測試直接呼叫 app 內的 AppKit 選單契約，不送出系統鍵盤輸入。另驗證快捷鍵設定表單 IPC、原生 F18／F19 組合來回註冊、即時保存、過期快捷鍵 ID 過濾與畫面提示同步。亦驗證原生視窗 resize 事件、網頁尺寸、尺寸保存、唯讀目錄下回復與恢復全高。它不是完整 UI E2E，不送出實際滑鼠拖曳，不會登入帳號或提交外部表單。
+smoke 驗證原生視窗、本機控制 IPC、example.com 載入、同文件 pushState，以及原生選單 ⌘L／⌘T／⌘W 的命令路由、原生 responder、DOM 焦點與收合。測試直接呼叫 app 內的 AppKit 選單契約，不送出系統鍵盤輸入。另驗證快捷鍵設定表單 IPC、原生 F18／F19 組合來回註冊、即時保存、過期快捷鍵 ID 過濾與畫面提示同步。另驗證英文預設、雙語設定 IPC、選單同步、語言保存失敗回復，以及切換時保留網站與其他偏好。亦驗證原生視窗 resize 事件、網頁尺寸、尺寸保存、唯讀目錄下回復與恢復全高。它不是完整 UI E2E，不送出實際滑鼠拖曳，不會登入帳號或提交外部表單。
 
-快捷鍵負向測試包含註冊衝突、保存失敗回復、提交後同步警告與解除失敗警告。`node scripts/test-shortcut-ui.cjs` 可重跑快捷鍵重設、尺寸控制命令與首頁網站清單的回歸測試。
+快捷鍵負向測試包含註冊衝突、保存失敗回復、提交後同步警告與解除失敗警告。`node scripts/test-shortcut-ui.cjs` 可重跑快捷鍵重設、尺寸控制命令與首頁網站清單的回歸測試，並檢查雙語切換、保存回覆前維持原語言與翻譯目錄完整性。
 
 ## 目前邊界
 

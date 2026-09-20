@@ -74,6 +74,7 @@ struct App {
     last_removed: Option<(Pad, usize)>,
     _tray: TrayIcon,
     _menu: Menu,
+    menu_labels: menus::Labels,
     shortcut_binding: ShortcutBinding<shortcuts::NativeShortcuts>,
     shortcut_error: Option<String>,
     resize_origin: Option<Frame>,
@@ -151,7 +152,7 @@ pub fn run() -> Result<()> {
             };
             if let Err(error) = outcome {
                 eprintln!("Open Slide Pad：{error:#}");
-                chrome::toast(&app.chrome, &error.to_string());
+                app.toast(&format!("{error:#}"));
             }
         }
     });
@@ -174,7 +175,7 @@ impl App {
             .with_visible_on_all_workspaces(true)
             .build(target)?;
         let chrome = chrome::build(&window, proxy.clone())?;
-        let (tray, menu) = menus::build(proxy.clone())?;
+        let (tray, menu, menu_labels) = menus::build(proxy.clone(), settings.language)?;
         let mut shortcut_binding =
             ShortcutBinding::new(shortcuts::NativeShortcuts(GlobalHotKeyManager::new()?));
         let shortcut_error = shortcut_binding
@@ -211,6 +212,7 @@ impl App {
             last_removed: None,
             _tray: tray,
             _menu: menu,
+            menu_labels,
             shortcut_binding,
             shortcut_error,
             resize_origin: None,
@@ -281,9 +283,12 @@ impl App {
         self.settings = settings;
         if let SaveOutcome::CommittedWithWarning(warning) = saved {
             eprintln!("Open Slide Pad：{warning}");
-            chrome::toast(&self.chrome, &warning);
+            self.toast(&warning);
         }
         Ok(())
+    }
+    fn toast(&self, message: &str) {
+        chrome::toast(&self.chrome, &self.settings.language.text(message));
     }
     fn sync_views(&mut self) -> Result<()> {
         if !self.home && !self.overlay {
@@ -324,7 +329,7 @@ impl App {
     }
     fn render(&self) -> Result<()> {
         let active = self.settings.active.and_then(|id| self.pads.get(&id));
-        let payload = json!({ "settings": self.settings, "shortcut_label": self.settings.toggle_shortcut.label(), "shortcut_active": self.shortcut_binding.active().is_some(), "shortcut_error": self.shortcut_error, "home": self.home, "undo_title": self.last_removed.as_ref().map(|(pad,_)| &pad.title), "title": active.map(|p| &p.title), "address": active.map(|p| &p.address), "loading": active.is_some_and(|p| p.loading), "back": active.is_some_and(|p| unsafe { p.view.webview().canGoBack() }), "forward": active.is_some_and(|p| unsafe { p.view.webview().canGoForward() }) });
+        let payload = json!({ "settings": self.settings, "shortcut_label": self.settings.toggle_shortcut.label(), "shortcut_active": self.shortcut_binding.active().is_some(), "shortcut_error": self.shortcut_error.as_ref().map(|error| self.settings.language.text(error)), "home": self.home, "undo_title": self.last_removed.as_ref().map(|(pad,_)| &pad.title), "title": active.map(|p| &p.title), "address": active.map(|p| &p.address), "loading": active.is_some_and(|p| p.loading), "back": active.is_some_and(|p| unsafe { p.view.webview().canGoBack() }), "forward": active.is_some_and(|p| unsafe { p.view.webview().canGoForward() }) });
         self.chrome
             .evaluate_script(&format!("window.render({payload})"))?;
         Ok(())
@@ -378,6 +383,14 @@ impl App {
                 self.chrome_ready = true;
             }
             Command::SetShortcut { shortcut } => self.set_shortcut(shortcut)?,
+            Command::SetLanguage { language } => {
+                self.commit(Settings {
+                    language,
+                    ..self.settings.clone()
+                })?;
+                self.menu_labels.set_language(language);
+                self.update_shortcut_tooltip();
+            }
             Command::BeginResize => self.begin_pointer_resize(),
             Command::FullHeight => {
                 self.commit(Settings {

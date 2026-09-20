@@ -61,9 +61,13 @@ pub fn alert(message: &str) {
     if let Some(mtm) = MainThreadMarker::new() {
         let _application = NSApplication::sharedApplication(mtm);
         let alert = NSAlert::new(mtm);
-        alert.setMessageText(&NSString::from_str("Open Slide Pad 無法啟動"));
-        alert.setInformativeText(&NSString::from_str(message));
-        alert.addButtonWithTitle(&NSString::from_str("好"));
+        // 尚未成功載入偏好時，啟動錯誤使用產品預設語言。
+        let language = sliderust::i18n::Language::default();
+        alert.setMessageText(&NSString::from_str(
+            &language.text("Open Slide Pad 無法啟動"),
+        ));
+        alert.setInformativeText(&NSString::from_str(&language.text(message)));
+        alert.addButtonWithTitle(&NSString::from_str(&language.text("好")));
         alert.runModal();
     }
 }

@@ -1,4 +1,4 @@
-use crate::shortcut::Shortcut;
+use crate::{i18n::Language, shortcut::Shortcut};
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -76,6 +76,8 @@ pub struct Pad {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Language::is_default")]
+    pub language: Language,
     pub pads: Vec<Pad>,
     pub active: Option<u64>,
     pub next_id: u64,
@@ -95,6 +97,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             version: 1,
+            language: Language::default(),
             pads: vec![],
             active: None,
             next_id: 1,

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
 use objc2_foundation::{NSPoint, NSString};
-use sliderust::shortcut::Shortcut;
+use sliderust::{i18n::Language, shortcut::Shortcut};
 use std::time::{Duration, Instant};
 use tao::event_loop::ControlFlow;
 use wry::{WebView, WebViewExtMacOS};
@@ -25,6 +25,11 @@ enum Stage {
     ShortcutLabel,
     ResizeLayout,
     ResizeLayoutResult,
+    LanguageDefault,
+    LanguageChanged,
+    LanguageChinese,
+    LanguageRestored,
+    LanguageEnglish,
     Done,
 }
 
@@ -36,6 +41,8 @@ pub struct Probe {
     shortcut_form_result: Option<bool>,
     shortcut_label_result: Option<bool>,
     resize_layout_result: Option<bool>,
+    language_result: Option<bool>,
+    language_settings: Option<sliderust::model::Settings>,
     started: Option<Instant>,
 }
 
@@ -47,6 +54,7 @@ impl Probe {
             "shortcut_form" => self.shortcut_form_result = Some(passed),
             "shortcut_label" => self.shortcut_label_result = Some(passed),
             "resize_layout" => self.resize_layout_result = Some(passed),
+            "language" => self.language_result = Some(passed),
             _ => {}
         }
     }
@@ -161,8 +169,75 @@ impl Probe {
                         self.stage = Stage::ResizeLayout;
                         return Ok(());
                     }
+                    verify_menu_language(Language::English)?;
+                    self.language_settings = Some(app.settings.clone());
+                    inspect(
+                        app,
+                        "language",
+                        "document.documentElement.lang === 'en' && document.getElementById('overlay-title').textContent === 'Settings' && document.getElementById('language-select').value === 'en'",
+                    )?;
+                    self.stage = Stage::LanguageDefault;
+                }
+            }
+            Stage::LanguageDefault => {
+                if let Some(passed) = self.language_result.take() {
+                    ensure!(passed, "預設英文介面不正確");
+                    select_language(app, "zh-TW")?;
+                    self.stage = Stage::LanguageChanged;
+                }
+            }
+            Stage::LanguageChanged if app.settings.language == Language::TraditionalChinese => {
+                let mut expected = self
+                    .language_settings
+                    .clone()
+                    .context("缺少語言切換前狀態")?;
+                expected.language = Language::TraditionalChinese;
+                ensure!(
+                    app.settings == expected && app.store.load()? == expected,
+                    "語言切換未保存或改變其他偏好"
+                );
+                ensure!(
+                    browser::current_url(active_view(app)?)
+                        .is_some_and(|url| url.ends_with("/sliderust-smoke")),
+                    "語言切換不應重載網站"
+                );
+                verify_menu_language(Language::TraditionalChinese)?;
+                verify_language_rollback(app, flow)?;
+                inspect(
+                    app,
+                    "language",
+                    "document.documentElement.lang === 'zh-TW' && document.getElementById('overlay-title').textContent === '設定' && document.getElementById('language-select').value === 'zh-TW' && document.getElementById('settings').title === '設定'",
+                )?;
+                self.stage = Stage::LanguageChinese;
+            }
+            Stage::LanguageChinese => {
+                if let Some(passed) = self.language_result.take() {
+                    ensure!(passed, "繁中介面或保存失敗後狀態不正確");
+                    select_language(app, "en")?;
+                    self.stage = Stage::LanguageRestored;
+                }
+            }
+            Stage::LanguageRestored if app.settings.language == Language::English => {
+                ensure!(
+                    Some(&app.settings) == self.language_settings.as_ref()
+                        && app.store.load()? == app.settings,
+                    "切回英文不應改變其他偏好"
+                );
+                verify_menu_language(Language::English)?;
+                inspect(
+                    app,
+                    "language",
+                    "document.documentElement.lang === 'en' && document.getElementById('overlay-title').textContent === 'Settings' && document.getElementById('settings').title === 'Settings' && document.getElementById('language-select').value === 'en'",
+                )?;
+                self.stage = Stage::LanguageEnglish;
+            }
+            Stage::LanguageEnglish => {
+                if let Some(passed) = self.language_result.take() {
+                    ensure!(passed, "切回英文後介面未同步");
+                    // 翻譯後的選單仍使用原本的原生快捷鍵。
+                    shortcut("l", 0x25)?;
                     eprintln!(
-                        "SMOKE chrome_ready=true remote_page_loaded=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true"
+                        "SMOKE chrome_ready=true remote_page_loaded=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true english_default=true language_ipc=true language_persistence=true language_rollback=true language_menus=true language_preserves_sites=true"
                     );
                     self.stage = Stage::Done;
                     *flow = ControlFlow::Exit;
@@ -172,6 +247,55 @@ impl Probe {
         }
         Ok(())
     }
+}
+
+fn select_language(app: &App, language: &str) -> Result<()> {
+    app.chrome.evaluate_script(&format!("document.getElementById('language-select').value = '{language}'; document.getElementById('language-select').onchange()"))?;
+    Ok(())
+}
+
+fn verify_menu_language(language: Language) -> Result<()> {
+    let mtm = MainThreadMarker::new().context("必須位於主執行緒")?;
+    let menu = NSApplication::sharedApplication(mtm)
+        .mainMenu()
+        .context("原生選單不存在")?;
+    for (index, source) in [(1, "檔案"), (2, "編輯"), (3, "瀏覽"), (4, "網站")] {
+        let item = menu.itemAtIndex(index).context("缺少原生選單項目")?;
+        ensure!(
+            item.title().to_string() == language.text(source),
+            "原生選單語言不一致：{source}"
+        );
+    }
+    Ok(())
+}
+
+fn verify_language_rollback(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
+    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+    let args: Vec<_> = std::env::args().collect();
+    let root = args
+        .windows(2)
+        .find(|arg| arg[0] == "--data-dir")
+        .map(|arg| PathBuf::from(&arg[1]))
+        .context("smoke 缺少資料目錄")?;
+    let saved = app.settings.clone();
+    let bytes = fs::read(root.join("settings.json"))?;
+    let permissions = fs::metadata(&root)?.permissions();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o500))?;
+    let failed = app.handle(
+        Event::Command(Command::SetLanguage {
+            language: Language::English,
+        }),
+        flow,
+    );
+    fs::set_permissions(&root, permissions)?;
+    ensure!(failed.is_err(), "唯讀目錄必須拒絕語言保存");
+    ensure!(
+        app.settings == saved
+            && app.store.load()? == saved
+            && fs::read(root.join("settings.json"))? == bytes,
+        "語言保存失敗改變原設定"
+    );
+    verify_menu_language(Language::TraditionalChinese)
 }
 
 fn verify_resize(app: &mut App, flow: &mut ControlFlow) -> Result<()> {

@@ -10,6 +10,9 @@ pub enum Command {
     Ready,
     BeginResize,
     FullHeight,
+    SetLanguage {
+        language: sliderust::i18n::Language,
+    },
     SetShortcut {
         shortcut: sliderust::shortcut::Shortcut,
     },
@@ -87,5 +90,10 @@ pub fn toast(view: &WebView, message: &str) {
 fn document() -> String {
     include_str!("../../ui/index.html")
         .replace("/* SLIDERUST_STYLE */", include_str!("../../ui/style.css"))
+        .replace(
+            "// SLIDERUST_I18N",
+            &include_str!("../../ui/i18n.js")
+                .replace("/* SLIDERUST_ENGLISH */", sliderust::i18n::ENGLISH_CATALOG),
+        )
         .replace("// SLIDERUST_SCRIPT", include_str!("../../ui/app.js"))
 }

@@ -1,5 +1,6 @@
 use super::{Event, chrome::Command};
 use anyhow::Result;
+use sliderust::i18n::Language;
 use tao::event_loop::EventLoopProxy;
 use tray_icon::{
     TrayIcon, TrayIconBuilder,
@@ -9,10 +10,55 @@ use tray_icon::{
     },
 };
 
-pub fn build(proxy: EventLoopProxy<Event>) -> Result<(TrayIcon, Menu)> {
+#[derive(Default)]
+pub struct Labels {
+    items: Vec<(MenuItem, String)>,
+    submenus: Vec<(Submenu, String)>,
+    predefined: Vec<(PredefinedMenuItem, String)>,
+}
+
+impl Labels {
+    fn item(
+        &mut self,
+        id: impl AsRef<str>,
+        title: impl AsRef<str>,
+        accelerator: Option<Accelerator>,
+    ) -> MenuItem {
+        let item = MenuItem::with_id(id.as_ref(), title.as_ref(), true, accelerator);
+        self.items.push((item.clone(), title.as_ref().to_owned()));
+        item
+    }
+
+    fn submenu(&mut self, title: &str) -> Submenu {
+        let menu = Submenu::new(title, true);
+        self.submenus.push((menu.clone(), title.to_owned()));
+        menu
+    }
+
+    fn predefined(&mut self, item: PredefinedMenuItem, title: &str) -> PredefinedMenuItem {
+        self.predefined.push((item.clone(), title.to_owned()));
+        item
+    }
+
+    pub fn set_language(&self, language: Language) {
+        // 只更新標題，保留原生選單物件、快捷鍵與事件處理器。
+        for (item, source) in &self.items {
+            item.set_text(language.text(source));
+        }
+        for (menu, source) in &self.submenus {
+            menu.set_text(language.text(source));
+        }
+        for (item, source) in &self.predefined {
+            item.set_text(language.text(source));
+        }
+    }
+}
+
+pub fn build(proxy: EventLoopProxy<Event>, language: Language) -> Result<(TrayIcon, Menu, Labels)> {
+    let mut labels = Labels::default();
     let shortcut = |key| Some(Accelerator::new(Some(Modifiers::SUPER), key));
-    let toggle = MenuItem::with_id("toggle", "顯示／收合 Open Slide Pad", true, None);
-    let quit = MenuItem::with_id("quit", "結束 Open Slide Pad", true, None);
+    let toggle = labels.item("toggle", "顯示／收合 Open Slide Pad", None);
+    let quit = labels.item("quit", "結束 Open Slide Pad", None);
     let tray_menu = Menu::with_items(&[&toggle, &PredefinedMenuItem::separator(), &quit])?;
     let tray = TrayIconBuilder::new()
         .with_title("◧")
@@ -23,39 +69,45 @@ pub fn build(proxy: EventLoopProxy<Event>) -> Result<(TrayIcon, Menu)> {
     let app_menu = Menu::new();
     let app_submenu = Submenu::new("Open Slide Pad", true);
     app_submenu.append_items(&[
-        &PredefinedMenuItem::about(Some("關於 Open Slide Pad"), None),
-        &MenuItem::with_id("settings", "設定⋯", true, shortcut(Code::Comma)),
+        &labels.predefined(
+            PredefinedMenuItem::about(Some("關於 Open Slide Pad"), None),
+            "關於 Open Slide Pad",
+        ),
+        &labels.item("settings", "設定⋯", shortcut(Code::Comma)),
         &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::quit(Some("結束 Open Slide Pad")),
+        &labels.predefined(
+            PredefinedMenuItem::quit(Some("結束 Open Slide Pad")),
+            "結束 Open Slide Pad",
+        ),
     ])?;
 
-    let file = Submenu::new("檔案", true);
+    let file = labels.submenu("檔案");
     file.append_items(&[
-        &MenuItem::with_id("new_pad", "新增網站⋯", true, shortcut(Code::KeyT)),
-        &MenuItem::with_id("hide", "收合側欄", true, shortcut(Code::KeyW)),
+        &labels.item("new_pad", "新增網站⋯", shortcut(Code::KeyT)),
+        &labels.item("hide", "收合側欄", shortcut(Code::KeyW)),
     ])?;
 
-    let edit = Submenu::new("編輯", true);
+    let edit = labels.submenu("編輯");
     edit.append_items(&[
-        &PredefinedMenuItem::undo(None),
-        &PredefinedMenuItem::redo(None),
+        &labels.predefined(PredefinedMenuItem::undo(Some("復原")), "復原"),
+        &labels.predefined(PredefinedMenuItem::redo(Some("重做")), "重做"),
         &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::cut(None),
-        &PredefinedMenuItem::copy(None),
-        &PredefinedMenuItem::paste(None),
-        &PredefinedMenuItem::select_all(None),
+        &labels.predefined(PredefinedMenuItem::cut(Some("剪下")), "剪下"),
+        &labels.predefined(PredefinedMenuItem::copy(Some("複製")), "複製"),
+        &labels.predefined(PredefinedMenuItem::paste(Some("貼上")), "貼上"),
+        &labels.predefined(PredefinedMenuItem::select_all(Some("全選")), "全選"),
     ])?;
 
-    let browse = Submenu::new("瀏覽", true);
+    let browse = labels.submenu("瀏覽");
     browse.append_items(&[
-        &MenuItem::with_id("focus_address", "輸入網址", true, shortcut(Code::KeyL)),
+        &labels.item("focus_address", "輸入網址", shortcut(Code::KeyL)),
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id("back", "上一頁", true, shortcut(Code::BracketLeft)),
-        &MenuItem::with_id("forward", "下一頁", true, shortcut(Code::BracketRight)),
-        &MenuItem::with_id("reload", "重新載入", true, shortcut(Code::KeyR)),
+        &labels.item("back", "上一頁", shortcut(Code::BracketLeft)),
+        &labels.item("forward", "下一頁", shortcut(Code::BracketRight)),
+        &labels.item("reload", "重新載入", shortcut(Code::KeyR)),
     ])?;
 
-    let sites = Submenu::new("網站", true);
+    let sites = labels.submenu("網站");
     for (index, key) in [
         Code::Digit1,
         Code::Digit2,
@@ -70,16 +122,16 @@ pub fn build(proxy: EventLoopProxy<Event>) -> Result<(TrayIcon, Menu)> {
     .into_iter()
     .enumerate()
     {
-        sites.append(&MenuItem::with_id(
+        sites.append(&labels.item(
             format!("select_pad_{index}"),
             format!("第 {} 個網站", index + 1),
-            true,
             shortcut(key),
         ))?;
     }
 
     // 主選單讓遠端 child WebView 聚焦時仍能收到應用程式快捷鍵。
     app_menu.append_items(&[&app_submenu, &file, &edit, &browse, &sites])?;
+    labels.set_language(language);
     app_menu.init_for_nsapp();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let message = match event.id.0.as_str() {
@@ -102,5 +154,5 @@ pub fn build(proxy: EventLoopProxy<Event>) -> Result<(TrayIcon, Menu)> {
             let _ = proxy.send_event(message);
         }
     }));
-    Ok((tray, app_menu))
+    Ok((tray, app_menu, labels))
 }
