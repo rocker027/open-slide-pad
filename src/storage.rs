@@ -6,6 +6,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
@@ -68,6 +69,21 @@ impl SettingsStore {
     /// 原子提交設定；Err 保留原檔，兩種 Ok 結果都必須同步呼叫端的記憶體狀態。
     pub fn save(&self, settings: &Settings) -> Result<SaveOutcome> {
         self.save_with_directory_sync(settings, |root| File::open(root)?.sync_all())
+    }
+
+    /// 把無法載入的設定檔改名留存，讓 App 能以預設值啟動；回傳備份路徑。
+    /// 只改名：不覆寫、不刪除任何檔案。以奈秒時間戳命名，避免與先前的備份同名。
+    pub fn quarantine(&self) -> Result<PathBuf> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        self.quarantine_as(&stamp.to_string())
+    }
+
+    fn quarantine_as(&self, suffix: &str) -> Result<PathBuf> {
+        let backup = self.root.join(format!("settings.json.broken-{suffix}"));
+        // rename 會取代既有目標；程序鎖已排除第二個 App，這裡再擋同名備份。
+        ensure!(!backup.exists(), "備份檔名已存在");
+        fs::rename(self.root.join("settings.json"), &backup).context("無法備份設定檔")?;
+        Ok(backup)
     }
 
     fn save_with_directory_sync(
@@ -166,6 +182,56 @@ mod tests {
             assert!(store.load().is_err());
             assert_eq!(fs::read(&path).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn fields_written_by_a_newer_version_survive_load_and_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::open(dir.path()).unwrap();
+        let mut newer = serde_json::to_value(Settings::default().add("a.com").unwrap()).unwrap();
+        newer["profiles"] = serde_json::json!([{"name": "work"}]);
+        fs::write(&path, serde_json::to_vec(&newer).unwrap()).unwrap();
+        let loaded = store.load().unwrap();
+        store.save(&loaded.add("b.com").unwrap()).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["profiles"], newer["profiles"]);
+        assert_eq!(saved["pads"].as_array().unwrap().len(), 2);
+        assert_eq!(saved["version"], 1);
+    }
+
+    #[test]
+    fn quarantine_renames_unreadable_settings_and_never_overwrites_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::open(dir.path()).unwrap();
+        for broken in [&b"{broken"[..], br#"{"version":2}"#] {
+            fs::write(&path, broken).unwrap();
+            assert!(store.load().is_err());
+            let backup = store.quarantine().unwrap();
+            assert_eq!(backup.parent(), Some(dir.path()));
+            assert!(
+                backup
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("settings.json.broken-")
+            );
+            assert_eq!(fs::read(&backup).unwrap(), broken, "備份須與原檔位元組相同");
+            assert!(!path.exists());
+            assert_eq!(store.load().unwrap(), Settings::default());
+        }
+        // 檔名相同的備份已存在時必須拒絕，兩個檔案都不得變動。
+        fs::write(&path, b"first").unwrap();
+        let first = store.quarantine_as("same").unwrap();
+        fs::write(&path, b"second").unwrap();
+        assert!(store.quarantine_as("same").is_err());
+        assert_eq!(fs::read(&first).unwrap(), b"first");
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        // 沒有設定檔可備份時回報錯誤，不建立任何檔案。
+        fs::remove_file(&path).unwrap();
+        assert!(store.quarantine_as("missing").is_err());
+        assert!(!dir.path().join("settings.json.broken-missing").exists());
     }
 
     #[test]

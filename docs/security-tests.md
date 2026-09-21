@@ -54,3 +54,29 @@
 - 對獨立smoke目錄暫設唯讀，確認保存失敗恢復frame/settings，再恢復原權限。
 - 本機grip只接受左鍵pointerdown IPC；Rust另查真實左鍵、游標位於把手與可見視窗，遠端仍無IPC。
 - 未執行實際系統滑鼠拖曳E2E、各種外接顯示器與縮放設定的實機測試。
+
+
+## 0.4.3 輸入放行規則與設定復原
+
+矩陣先於實作建立，並先對舊實作取得失敗結果。
+
+| 嘗試／故障 | 預期 | 驗證 |
+| --- | --- | --- |
+| 網址列輸入 `host:port`（`localhost:3000`、`example.com:8080/a`） | 補上 scheme 後開啟；只有 http/https 進入 WebKit | normalize_address 測試＋「接受的輸出必為 web_url」測試 |
+| 含空白且開頭像 scheme（`site:x y`、`javascript:alert(1) //x`） | 當成 DuckDuckGo 搜尋字串，經 URL 編碼 | normalize_address 測試 |
+| 無空白的非 http(s) scheme、畸形埠、帳密變體（`foo:bar`、`nas:5000`、`evil.com:80@example.com`、`example.com:99999`、`https://example.com:8a/`、全形數字埠） | 拒絕 | normalize_address 負向測試 |
+| 百分比編碼後超過 8192 位元組的網址或搜尋 | 拒絕；回傳值一律以實際要載入的字串再過一次 web_url | 「接受的輸出必為 web_url」測試（含 8192 邊界） |
+| 頭尾空白的網址（`Url::parse` 會默默剝除） | web_url 在解析前拒絕 | navigation_allowed 負向測試 |
+| iframe 導向 `about:blank`（可帶 query／fragment）、`about:srcdoc`（只能帶 fragment）、來源為 http(s) 的 `blob:` | 放行 | navigation_allowed 測試＋原生 smoke |
+| 任何形態的位址含空白、控制字元，或整個位址超過 8192 位元組 | 拒絕；前置條件對 http(s)、`blob:`、`about:` 一視同仁 | 「前置條件 × 位址形態」矩陣測試 |
+| `about:srcdoc?query`、`about:config#about:blank`、`javascript:…#about:blank`、`about:blank%23x` 等前綴混淆 | 拒絕；比對整份文件位址，不是「包含」或「開頭是」 | navigation_allowed 負向測試 |
+| 任何框架導向 `data:`、`file:`、`javascript:`、`blob:null`、`blob:file:`、`blob:blob:`、含帳密的 blob 來源、自訂 scheme（含 `ws:`、`filesystem:`、`view-source:`）、其他 `about:` 頁、`about:`／`blob:` 的大小寫變體、頭尾空白、全形或百分比編碼的 scheme、含控制字元者 | 拒絕 | navigation_allowed 負向測試；`data:` 另由原生 smoke 觀察 |
+| 設定損毀／過大／未來版本（取代第一節同名列的「回報錯誤」） | 詢問後才動作：結束則原檔不動；重設則原檔改名備份，位元組相同 | quarantine 整合測試；smoke 模式不顯示對話框、原檔不動 |
+| 同名備份已存在／沒有設定檔可備份 | 拒絕，兩個檔案都不變動、不建立新檔 | quarantine 整合測試 |
+| 新版寫入本版不認得的頂層欄位 | 原樣保留並寫回；`pads` 與 `toggle_shortcut` 內的未知欄位仍拒絕 | model 往返測試＋真實檔案保存測試 |
+| 設定檔頂層出現 `__proto__` 之類的鍵 | 只保留在磁碟，不送進控制面板 | without_unknown_fields 測試 |
+| 保存失敗時切換網站 | 照常切換並提示；磁碟設定不變，之後的成功保存一併寫入 | 原生 smoke（唯讀目錄） |
+
+解析後仍是一般 http(s) 網址的寫法（大寫 scheme、空的 userinfo、同形字網域）視為合法；同形字網域在網址列以 punycode 顯示。
+
+矩陣經獨立探測者三輪實跑後補列並重整；最後一輪對定版規則跑了 536 個手工輸入與約 76 萬個相異 fuzz 輸入（含與重構前邏輯的差分比對），零反例。探測程式未收進 repo。「備份並重設」對話框的按鈕行為未經自動化驗證（執行環境沒有輔助使用權限）；已實測對話框會以 modal 層級顯示在前景，第一個（預設）按鈕是結束。

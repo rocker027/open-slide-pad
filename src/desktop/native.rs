@@ -55,11 +55,48 @@ pub fn opacity(host: &Window, opacity: f64) {
     window(host).setAlphaValue(opacity);
 }
 
+/// 啟動期的對話框出現在事件迴圈開始之前，這時 tao 還沒套用啟用政策，App 也尚未啟用。
+/// 對話框會開在一般視窗層級、可能被其他 App 的視窗蓋住，看起來像啟動卡住；
+/// 先設定政策並帶到前景，對話框才會以 modal 層級顯示在最上層。
+fn bring_to_front(application: &objc2_app_kit::NSApplication) {
+    application.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+    // macOS 14 的 activate() 在最低支援的 macOS 13 上不存在。
+    #[allow(deprecated)]
+    application.activateIgnoringOtherApps(true);
+}
+
+/// 設定無法載入時，詢問是否備份原檔並以預設值啟動；回傳 true 代表使用者選擇重設。
+/// 第一個按鈕（Return 預設）是結束，避免誤按就丟掉網站清單。
+pub fn confirm_reset(message: &str) -> bool {
+    use objc2_app_kit::{NSAlert, NSAlertSecondButtonReturn, NSApplication};
+    use objc2_foundation::NSString;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    bring_to_front(&NSApplication::sharedApplication(mtm));
+    let alert = NSAlert::new(mtm);
+    // 偏好尚未載入，與啟動錯誤一樣使用產品預設語言。
+    let language = sliderust::i18n::Language::default();
+    alert.setMessageText(&NSString::from_str(
+        &language.text("Open Slide Pad 無法載入設定"),
+    ));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "{}\n\n{}",
+        language.text(message),
+        language.text(
+            "可以先結束再自行修復。也可以把目前的設定檔改名備份，然後以預設設定啟動。網站登入資料不受影響。"
+        )
+    )));
+    alert.addButtonWithTitle(&NSString::from_str(&language.text("結束")));
+    alert.addButtonWithTitle(&NSString::from_str(&language.text("備份並重設")));
+    alert.runModal() == NSAlertSecondButtonReturn
+}
+
 pub fn alert(message: &str) {
     use objc2_app_kit::{NSAlert, NSApplication};
     use objc2_foundation::NSString;
     if let Some(mtm) = MainThreadMarker::new() {
-        let _application = NSApplication::sharedApplication(mtm);
+        bring_to_front(&NSApplication::sharedApplication(mtm));
         let alert = NSAlert::new(mtm);
         // 尚未成功載入偏好時，啟動錯誤使用產品預設語言。
         let language = sliderust::i18n::Language::default();

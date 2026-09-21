@@ -12,7 +12,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use serde_json::json;
 use sliderust::{
     model::{Pad, Settings, Side, normalize_address, web_url},
-    panel::{EdgeTrigger, Frame},
+    panel::{Activity, AutoHide, EdgeTrigger, Frame, OpenedBy, POLL_TICK},
     shortcut::ShortcutBinding,
     storage::{SaveOutcome, SettingsStore},
 };
@@ -62,8 +62,7 @@ struct App {
     visible: bool,
     home: bool,
     overlay: bool,
-    entered: bool,
-    outside_since: Option<Instant>,
+    auto_hide: AutoHide,
     animation: Option<(Instant, bool)>,
     edge: EdgeTrigger,
     smoke: bool,
@@ -100,17 +99,21 @@ pub fn run() -> Result<()> {
             .to_owned(),
     );
     let store = SettingsStore::open(&root)?;
-    let mut settings = store.load()?;
+    let mut event_loop = EventLoopBuilder::<Event>::with_user_event().build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    // tao 必須是第一個建立 NSApplication 的人，否則之後拿到的不是它的子類。
+    // 載入失敗的對話框會用到 NSApplication，所以要排在事件迴圈建立之後。
+    let Some(mut settings) = load_settings(&store, smoke)? else {
+        return Ok(());
+    };
     if smoke {
         settings = Settings::default().add("https://example.com")?;
     }
-    let mut event_loop = EventLoopBuilder::<Event>::with_user_event().build();
-    event_loop.set_activation_policy(ActivationPolicy::Accessory);
     let proxy = event_loop.create_proxy();
     let mut app: Option<App> = None;
     let mut initial_store = Some(store);
     event_loop.run(move |event, target, flow| {
-        *flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(32));
+        *flow = ControlFlow::WaitUntil(Instant::now() + POLL_TICK);
         if let TaoEvent::NewEvents(StartCause::Init) = event {
             match App::new(
                 target,
@@ -153,6 +156,10 @@ pub fn run() -> Result<()> {
             if let Err(error) = outcome {
                 eprintln!("Open Slide Pad：{error:#}");
                 app.toast(&format!("{error:#}"));
+            }
+            // 結束中的狀態不可被覆蓋，否則程序不會退出。
+            if !matches!(*flow, ControlFlow::Exit | ControlFlow::ExitWithCode(_)) {
+                *flow = app.next_wake();
             }
         }
     });
@@ -200,8 +207,7 @@ impl App {
             screen: Frame::default(),
             visible: false,
             overlay: false,
-            entered: false,
-            outside_since: None,
+            auto_hide: AutoHide::default(),
             animation: None,
             edge: EdgeTrigger::default(),
             smoke,
@@ -219,11 +225,28 @@ impl App {
             pointer_resize: None,
         };
         app.update_shortcut_tooltip();
-        app.show()?;
+        app.show(OpenedBy::Request)?;
         Ok(app)
     }
 
-    fn show(&mut self) -> Result<()> {
+    /// 隱藏且 hot edge 關閉時完全不輪詢；動畫與拖曳期間提高更新頻率。
+    fn next_wake(&self) -> ControlFlow {
+        let activity = Activity {
+            probing: self.smoke,
+            animating: self.animation.is_some()
+                || self.pointer_resize.is_some()
+                || self.resize_origin.is_some(),
+            visible: self.visible,
+            hot_edge: self.settings.hot_edge,
+        };
+        activity
+            .wake_interval()
+            .map_or(ControlFlow::Wait, |interval| {
+                ControlFlow::WaitUntil(Instant::now() + interval)
+            })
+    }
+
+    fn show(&mut self, by: OpenedBy) -> Result<()> {
         let screens = native::screens();
         let (_, work) = screens
             .iter()
@@ -233,12 +256,14 @@ impl App {
         self.screen = *work;
         self.reposition()?;
         self.visible = true;
-        self.entered = false;
-        self.outside_since = None;
+        self.auto_hide.opened(by);
         self.animation = Some((Instant::now(), true));
         native::opacity(&self.window, 0.0);
         self.window.set_visible(true);
-        self.window.set_focus();
+        // 碰到邊緣只顯示、不啟用 App：使用者可能正在別的 App 打字，點進面板才取得鍵盤焦點。
+        if by == OpenedBy::Request {
+            self.window.set_focus();
+        }
         self.sync_views()?;
         self.render()
     }
@@ -291,35 +316,35 @@ impl App {
         chrome::toast(&self.chrome, &self.settings.language.text(message));
     }
     fn sync_views(&mut self) -> Result<()> {
-        if !self.home && !self.overlay {
-            if let Some(id) = self.settings.active {
-                if !self.pads.contains_key(&id) {
-                    let pad = self
-                        .settings
-                        .pads
-                        .iter()
-                        .find(|pad| pad.id == id)
-                        .context("網站不存在")?;
-                    let view = browser::build(
-                        &self.window,
-                        pad,
-                        self.proxy.clone(),
-                        self.frame.width,
-                        self.frame.height,
-                        self.smoke,
-                    )?;
-                    self.pads.insert(
-                        id,
-                        BrowserPad {
-                            view,
-                            title: pad.title.clone(),
-                            address: pad.url.clone(),
-                            loading: true,
-                            history: (false, false),
-                        },
-                    );
-                }
-            }
+        if !self.home
+            && !self.overlay
+            && let Some(id) = self.settings.active
+            && !self.pads.contains_key(&id)
+        {
+            let pad = self
+                .settings
+                .pads
+                .iter()
+                .find(|pad| pad.id == id)
+                .context("網站不存在")?;
+            let view = browser::build(
+                &self.window,
+                pad,
+                self.proxy.clone(),
+                self.frame.width,
+                self.frame.height,
+                self.smoke,
+            )?;
+            self.pads.insert(
+                id,
+                BrowserPad {
+                    view,
+                    title: pad.title.clone(),
+                    address: pad.url.clone(),
+                    loading: true,
+                    history: (false, false),
+                },
+            );
         }
         for (id, pad) in &self.pads {
             pad.view
@@ -329,7 +354,7 @@ impl App {
     }
     fn render(&self) -> Result<()> {
         let active = self.settings.active.and_then(|id| self.pads.get(&id));
-        let payload = json!({ "settings": self.settings, "shortcut_label": self.settings.toggle_shortcut.label(), "shortcut_active": self.shortcut_binding.active().is_some(), "shortcut_error": self.shortcut_error.as_ref().map(|error| self.settings.language.text(error)), "home": self.home, "undo_title": self.last_removed.as_ref().map(|(pad,_)| &pad.title), "title": active.map(|p| &p.title), "address": active.map(|p| &p.address), "loading": active.is_some_and(|p| p.loading), "back": active.is_some_and(|p| unsafe { p.view.webview().canGoBack() }), "forward": active.is_some_and(|p| unsafe { p.view.webview().canGoForward() }) });
+        let payload = json!({ "settings": self.settings.without_unknown_fields(), "shortcut_label": self.settings.toggle_shortcut.label(), "shortcut_active": self.shortcut_binding.active().is_some(), "shortcut_error": self.shortcut_error.as_ref().map(|error| self.settings.language.text(error)), "home": self.home, "undo_title": self.last_removed.as_ref().map(|(pad,_)| &pad.title), "title": active.map(|p| &p.title), "address": active.map(|p| &p.address), "loading": active.is_some_and(|p| p.loading), "back": active.is_some_and(|p| unsafe { p.view.webview().canGoBack() }), "forward": active.is_some_and(|p| unsafe { p.view.webview().canGoForward() }) });
         self.chrome
             .evaluate_script(&format!("window.render({payload})"))?;
         Ok(())
@@ -345,7 +370,7 @@ impl App {
                 if self.visible {
                     self.hide();
                 } else {
-                    self.show()?;
+                    self.show(OpenedBy::Request)?;
                 }
             }
             Event::Command(command) => self.command(command, flow)?,
@@ -483,13 +508,23 @@ impl App {
             self.settings.pads.iter().any(|pad| pad.id == id),
             "網站不存在"
         );
-        self.commit(Settings {
-            active: Some(id),
-            ..self.settings.clone()
-        })?;
         self.home = false;
         self.overlay = false;
         self.chrome.evaluate_script("window.closeOverlay()")?;
+        if self.settings.active == Some(id) {
+            return Ok(());
+        }
+        // 選取的網站屬於 UI 狀態，是「以成功寫入作為提交點」的例外：先切換，保存失敗只提示。
+        // 之後任何一次成功保存都會把目前的選取一併寫入。
+        let updated = Settings {
+            active: Some(id),
+            ..self.settings.clone()
+        };
+        if let Err(error) = self.commit(updated.clone()) {
+            self.settings = updated;
+            eprintln!("Open Slide Pad：{error:#}");
+            self.toast(&format!("已切換網站，但無法保存選取狀態：{error:#}"));
+        }
         Ok(())
     }
     fn undo_remove(&mut self) -> Result<()> {
@@ -502,7 +537,7 @@ impl App {
     }
     fn focus_chrome(&mut self, script: &str, overlay: bool) -> Result<()> {
         if !self.visible {
-            self.show()?;
+            self.show(OpenedBy::Request)?;
         }
         self.overlay = overlay;
         self.sync_views()?;
@@ -622,21 +657,38 @@ impl App {
             .iter()
             .any(|(full, _)| full.at_edge(mouse, self.settings.side));
         if self.edge.update(at_edge && self.settings.hot_edge, now) && !self.visible {
-            self.show()?;
+            self.show(OpenedBy::Edge)?;
         }
         if self.visible && !self.smoke && self.animation.is_none() {
-            if self.frame.contains(mouse) {
-                self.entered = true;
-                self.outside_since = None;
-            } else if self.entered && !self.settings.pinned && !self.overlay {
-                let start = *self.outside_since.get_or_insert(now);
-                if now.duration_since(start) > Duration::from_millis(650) {
-                    self.hide();
-                }
+            let held = self.settings.pinned || self.overlay;
+            if self
+                .auto_hide
+                .update(self.frame.contains(mouse), at_edge, held, now)
+            {
+                self.hide();
             }
         }
         Ok(())
     }
+}
+
+/// 設定無法載入時由使用者決定：結束（回傳 None，原檔不動），或把原檔改名備份後以預設值啟動。
+/// smoke 不顯示對話框，直接回報錯誤。
+fn load_settings(store: &SettingsStore, smoke: bool) -> Result<Option<Settings>> {
+    let error = match store.load() {
+        Ok(settings) => return Ok(Some(settings)),
+        Err(error) => error,
+    };
+    if smoke {
+        return Err(error);
+    }
+    eprintln!("Open Slide Pad：{error:#}");
+    if !native::confirm_reset(&format!("{error:#}")) {
+        return Ok(None);
+    }
+    let backup = store.quarantine()?;
+    eprintln!("Open Slide Pad：原設定已備份至 {}", backup.display());
+    store.load().map(Some)
 }
 
 pub fn report_error(message: &str) {

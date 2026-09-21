@@ -26,7 +26,7 @@ impl App {
     fn begin_resize(&mut self) {
         self.resize_origin.get_or_insert(self.frame);
         self.animation = None;
-        self.outside_since = None;
+        self.auto_hide.pause();
         native::opacity(&self.window, 1.0);
     }
 

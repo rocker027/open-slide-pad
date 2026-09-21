@@ -80,10 +80,10 @@ pub fn build(window: &Window, proxy: EventLoopProxy<Event>) -> Result<WebView> {
 }
 
 pub fn toast(view: &WebView, message: &str) {
-    if let Ok(encoded) = serde_json::to_string(message) {
-        if let Err(error) = view.evaluate_script(&format!("window.showToast({encoded})")) {
-            eprintln!("提示訊息無法顯示：{error}");
-        }
+    if let Ok(encoded) = serde_json::to_string(message)
+        && let Err(error) = view.evaluate_script(&format!("window.showToast({encoded})"))
+    {
+        eprintln!("提示訊息無法顯示：{error}");
     }
 }
 
@@ -96,4 +96,19 @@ fn document() -> String {
                 .replace("/* SLIDERUST_ENGLISH */", sliderust::i18n::ENGLISH_CATALOG),
         )
         .replace("// SLIDERUST_SCRIPT", include_str!("../../ui/app.js"))
+        .replace("/* SLIDERUST_VERSION */", env!("CARGO_PKG_VERSION"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn document_replaces_every_placeholder_and_embeds_the_package_version() {
+        let document = super::document();
+        assert!(!document.contains("SLIDERUST_"), "尚有未替換的占位符");
+        assert!(document.contains(concat!(
+            "const APP_VERSION = '",
+            env!("CARGO_PKG_VERSION"),
+            "';"
+        )));
+    }
 }

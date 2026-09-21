@@ -4,6 +4,16 @@ use std::{collections::BTreeMap, sync::LazyLock};
 pub const ENGLISH_CATALOG: &str = include_str!("../ui/locales/en.json");
 static ENGLISH: LazyLock<BTreeMap<String, String>> =
     LazyLock::new(|| serde_json::from_str(ENGLISH_CATALOG).expect("valid translation catalog"));
+// 由長到短排序只算一次：先比對具體訊息，避免「{count} 個網站」吃掉「最多保留 {count} 個網站」。
+static TEMPLATES: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::new(|| {
+    let mut templates: Vec<_> = ENGLISH
+        .iter()
+        .filter(|(key, _)| key.contains('{'))
+        .map(|(key, translated)| (key.as_str(), translated.as_str()))
+        .collect();
+    templates.sort_by_key(|(key, _)| std::cmp::Reverse(key.len()));
+    templates
+});
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Language {
@@ -30,19 +40,14 @@ impl Language {
         if let Some(translated) = ENGLISH.get(source) {
             return translated.clone();
         }
-        // 先比對具體訊息，避免「{count} 個網站」吃掉「最多保留 {count} 個網站」。
-        let mut templates: Vec<_> = ENGLISH
-            .iter()
-            .filter(|(key, _)| key.contains('{'))
-            .collect();
-        templates.sort_by_key(|(key, _)| std::cmp::Reverse(key.len()));
-        for (template, translated) in templates {
+        for (template, translated) in TEMPLATES.iter() {
             if let Some(arguments) = capture_arguments(template, source) {
-                return arguments
-                    .into_iter()
-                    .fold(translated.clone(), |text, (name, value)| {
+                return arguments.into_iter().fold(
+                    translated.to_string(),
+                    |text, (name, value)| {
                         text.replace(&format!("{{{name}}}"), &self.translate(value, depth + 1))
-                    });
+                    },
+                );
             }
         }
         // anyhow 的 context chain 保留技術原因，只翻譯我們已定義的訊息。

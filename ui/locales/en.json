@@ -152,5 +152,13 @@
   "快捷鍵已更新，但舊快捷鍵 {shortcut} 解除失敗：{error}": "Shortcut updated, but the old shortcut {shortcut} could not be released: {error}",
   "{error}；新快捷鍵 {shortcut} 解除失敗：{cleanup}": "{error}; the new shortcut {shortcut} could not be released: {cleanup}",
   "找不到螢幕": "Could not find a display",
-  "網頁尚未有可開啟的網址": "This page does not have a URL to open yet"
+  "網頁尚未有可開啟的網址": "This page does not have a URL to open yet",
+  "smoke test 必須指定獨立 --data-dir": "The smoke test requires a dedicated --data-dir",
+  "Open Slide Pad 無法載入設定": "Open Slide Pad could not load its settings",
+  "可以先結束再自行修復。也可以把目前的設定檔改名備份，然後以預設設定啟動。網站登入資料不受影響。": "You can quit and repair the file yourself, or rename the current settings file as a backup and start with default settings. Website sign-ins are not affected.",
+  "結束": "Quit",
+  "備份並重設": "Back Up and Reset",
+  "備份檔名已存在": "A backup with the same name already exists",
+  "無法備份設定檔": "Could not back up the settings file",
+  "已切換網站，但無法保存選取狀態：{error}": "Switched sites, but the selection could not be saved: {error}"
 }

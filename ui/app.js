@@ -1,4 +1,6 @@
 'use strict';
+// 版本以 Cargo.toml 為唯一來源，由 Rust 在組合文件時代入。
+const APP_VERSION = '/* SLIDERUST_VERSION */';
 const $ = id => document.getElementById(id);
 let snapshot = null;
 let overlayMode = null;
@@ -259,7 +261,7 @@ function renderSettings(element) {
     shortcuts.append(item);
   });
   element.append(shortcuts, button(t('結束 Open Slide Pad'), () => send('quit'), 'pill'));
-  element.append(text('p', 'Open Slide Pad 0.4.2', 'version'));
+  element.append(text('p', `Open Slide Pad ${APP_VERSION}`, 'version'));
 }
 function padInitial(pad) {
   return Array.from(pad.title.replace(/^www\./, '')).slice(0,2).join('').toUpperCase();
@@ -366,6 +368,7 @@ function renderQuickSites() {
 }
 localizeDocument();
 renderQuickSites();
+$('app-version').textContent = APP_VERSION;
 // Cmd 快捷鍵由原生選單統一處理，避免同一個按鍵重複送出命令。
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') overlayMode ? dismiss() : send('hide');

@@ -26,4 +26,4 @@
 
 ## 預覽
 
-`preview.png` 為使用獨立暫存設定的原生 WKWebView 視窗（測試快捷鍵 F17）；`preview-light.png` 與 `preview-dark.png` 為同一份 UI 配合示範網站資料的 Chromium 畫面，僅展示本機控制介面，不代表遠端網站整合驗證。
+`preview.png` 為使用獨立暫存設定的原生 WKWebView 視窗（測試快捷鍵 F17），擷取自 0.4.1，當時介面預設為繁體中文；`preview-light.png` 與 `preview-dark.png` 為同一份 UI 配合示範網站資料的 Chromium 畫面，僅展示本機控制介面，不代表遠端網站整合驗證。

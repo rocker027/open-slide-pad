@@ -13,6 +13,7 @@ use wry::{WebView, WebViewExtMacOS};
 enum Stage {
     #[default]
     Page,
+    Frames,
     Spa,
     Address,
     AddressResult,
@@ -43,8 +44,23 @@ pub struct Probe {
     resize_layout_result: Option<bool>,
     language_result: Option<bool>,
     language_settings: Option<sliderust::model::Settings>,
+    frames_result: Option<bool>,
+    frames_started: Option<Instant>,
+    frames_polled: Option<Instant>,
+    frames_loaded: Option<Instant>,
     started: Option<Instant>,
 }
+
+// 三個 iframe 各自向上層回報載入：srcdoc 與 blob 應放行，data: 應被導覽規則擋下。
+const EMBED_FRAMES: &str = r#"(() => {
+  window.__smokeFrames = [];
+  addEventListener('message', event => window.__smokeFrames.push(String(event.data)));
+  const page = name => `<script>parent.postMessage('${name}', '*')</script>`;
+  const embed = configure => { const frame = document.createElement('iframe'); configure(frame); document.body.append(frame); };
+  embed(frame => { frame.srcdoc = page('srcdoc'); });
+  embed(frame => { frame.src = URL.createObjectURL(new Blob([page('blob')], {type: 'text/html'})); });
+  embed(frame => { frame.src = 'data:text/html,' + encodeURIComponent(page('data')); });
+})()"#;
 
 impl Probe {
     pub fn receive(&mut self, name: &str, passed: bool) {
@@ -55,6 +71,8 @@ impl Probe {
             "shortcut_label" => self.shortcut_label_result = Some(passed),
             "resize_layout" => self.resize_layout_result = Some(passed),
             "language" => self.language_result = Some(passed),
+            // 一旦看過 data: 文件載入就維持失敗，不被之後的回報蓋掉。
+            "frames" => self.frames_result = Some(passed && self.frames_result != Some(false)),
             _ => {}
         }
     }
@@ -63,9 +81,16 @@ impl Probe {
         ensure!(start.elapsed() < Duration::from_secs(25), "原生 smoke 逾時");
         match self.stage {
             Stage::Page if app.chrome_ready && app.page_loaded => {
-                let view = active_view(app)?;
-                view.evaluate_script("history.pushState({}, '', '/sliderust-smoke')")?;
-                self.stage = Stage::Spa;
+                active_view(app)?.evaluate_script(EMBED_FRAMES)?;
+                self.frames_started = Some(Instant::now());
+                self.stage = Stage::Frames;
+            }
+            Stage::Frames => {
+                if self.frames_settled(app)? {
+                    let view = active_view(app)?;
+                    view.evaluate_script("history.pushState({}, '', '/sliderust-smoke')")?;
+                    self.stage = Stage::Spa;
+                }
             }
             Stage::Spa => {
                 let view = active_view(app)?;
@@ -236,8 +261,9 @@ impl Probe {
                     ensure!(passed, "切回英文後介面未同步");
                     // 翻譯後的選單仍使用原本的原生快捷鍵。
                     shortcut("l", 0x25)?;
+                    verify_select_policy(app, flow)?;
                     eprintln!(
-                        "SMOKE chrome_ready=true remote_page_loaded=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true english_default=true language_ipc=true language_persistence=true language_rollback=true language_menus=true language_preserves_sites=true"
+                        "SMOKE chrome_ready=true remote_page_loaded=true embedded_frames=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true english_default=true language_ipc=true language_persistence=true language_rollback=true language_menus=true language_preserves_sites=true select_policy=true"
                     );
                     self.stage = Stage::Done;
                     *flow = ControlFlow::Exit;
@@ -246,6 +272,45 @@ impl Probe {
             _ => {}
         }
         Ok(())
+    }
+
+    /// 等 srcdoc 與 blob 文件回報載入，再多觀察半秒，確認 data: 文件始終被擋下。
+    fn frames_settled(&mut self, app: &App) -> Result<bool> {
+        ensure!(
+            self.frames_result != Some(false),
+            "遠端 WebView 放行了 data: 文件"
+        );
+        if self.frames_result == Some(true) {
+            let loaded = *self.frames_loaded.get_or_insert_with(Instant::now);
+            if loaded.elapsed() >= Duration::from_millis(500) {
+                return Ok(true);
+            }
+        }
+        ensure!(
+            self.frames_result.is_some()
+                || self
+                    .frames_started
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(5)),
+            "遠端 WebView 未載入 srcdoc／blob 文件"
+        );
+        if self
+            .frames_polled
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(200))
+        {
+            self.frames_polled = Some(Instant::now());
+            let proxy = app.proxy.clone();
+            active_view(app)?.evaluate_script_with_callback(
+                "(window.__smokeFrames || []).join(',')",
+                move |frames| {
+                    if frames.contains("data") {
+                        let _ = proxy.send_event(Event::SmokeResult("frames", false));
+                    } else if frames.contains("srcdoc") && frames.contains("blob") {
+                        let _ = proxy.send_event(Event::SmokeResult("frames", true));
+                    }
+                },
+            )?;
+        }
+        Ok(false)
     }
 }
 
@@ -266,6 +331,57 @@ fn verify_menu_language(language: Language) -> Result<()> {
             "原生選單語言不一致：{source}"
         );
     }
+    Ok(())
+}
+
+/// 選取的網站屬於 UI 狀態：已選同一站不寫檔；保存失敗仍要切換，之後的成功保存會一併寫入。
+fn verify_select_policy(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
+    use std::{
+        fs,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        path::PathBuf,
+    };
+    let args: Vec<_> = std::env::args().collect();
+    let root = args
+        .windows(2)
+        .find(|arg| arg[0] == "--data-dir")
+        .map(|arg| PathBuf::from(&arg[1]))
+        .context("smoke 缺少資料目錄")?;
+    let file = root.join("settings.json");
+    let first = app.settings.active.context("smoke 網站不存在")?;
+    app.handle(
+        Event::Command(Command::Add {
+            address: "https://example.com/second".to_owned(),
+        }),
+        flow,
+    )?;
+    let second = app.settings.active.context("smoke 網站不存在")?;
+    ensure!(second != first, "新增網站後未選取新網站");
+    // 原子保存會換掉 inode，可用來分辨「沒寫檔」與「寫了相同內容」。
+    let inode = fs::metadata(&file)?.ino();
+    app.handle(Event::Command(Command::Select { id: second }), flow)?;
+    ensure!(
+        fs::metadata(&file)?.ino() == inode,
+        "選取已開啟的網站不應寫檔"
+    );
+    let permissions = fs::metadata(&root)?.permissions();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o500))?;
+    let switched = app.handle(Event::Command(Command::Select { id: first }), flow);
+    fs::set_permissions(&root, permissions)?;
+    ensure!(switched.is_ok(), "保存失敗不應阻止切換網站");
+    ensure!(
+        app.settings.active == Some(first) && !app.home,
+        "保存失敗後畫面未切換網站"
+    );
+    ensure!(
+        app.store.load()?.active == Some(second),
+        "保存失敗卻改動了磁碟設定"
+    );
+    app.handle(Event::Command(Command::Pin), flow)?;
+    ensure!(
+        app.store.load()? == app.settings,
+        "後續保存未寫入目前選取的網站"
+    );
     Ok(())
 }
 

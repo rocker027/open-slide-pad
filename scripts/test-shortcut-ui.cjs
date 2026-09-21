@@ -17,7 +17,7 @@ class Element {
   remove() { this.parent.children.splice(this.parent.children.indexOf(this),1); }
   focus() { ctx.document.activeElement=this; } select() {}
 }
-for(const id of ['pads','home','home-button','site-count','saved-sites','empty-state','suggestions','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','resize-grip']) {
+for(const id of ['pads','home','home-button','site-count','saved-sites','empty-state','suggestions','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','resize-grip','app-version']) {
  const e=new Element('div'); e.id=id; e.append(new Element('#text'));
 }
 const sent=[];
@@ -27,15 +27,36 @@ const sourcePath = process.argv[2] || path.join(__dirname, '../ui/app.js');
 const catalog=JSON.parse(fs.readFileSync(path.join(__dirname, '../ui/locales/en.json'), 'utf8'));
 const i18nSource=fs.readFileSync(path.join(__dirname, '../ui/i18n.js'), 'utf8').replace('/* SLIDERUST_ENGLISH */', JSON.stringify(catalog));
 vm.runInContext(i18nSource,ctx);
-const appSource=fs.readFileSync(sourcePath, 'utf8');
+const appSource=fs.readFileSync(sourcePath, 'utf8').replace('/* SLIDERUST_VERSION */', '9.9.9');
 vm.runInContext(appSource, ctx);
 for (const [,key] of appSource.matchAll(/\bt\('([^']+)'/g)) assert.ok(Object.hasOwn(catalog,key), `Missing translation: ${key}`);
 const html=fs.readFileSync(path.join(__dirname, '../ui/index.html'),'utf8');
 for (const [,key] of html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)) assert.ok(Object.hasOwn(catalog,key), `Missing static translation: ${key}`);
 const parameters=value=>[...value.matchAll(/\{(\w+)\}/g)].map(m=>m[1]).sort();
 for (const [key,value] of Object.entries(catalog)) assert.deepEqual(parameters(value),parameters(key), `Template parameters differ: ${key}`);
+// Rust 端訊息同樣以繁中為鍵；漏收錄時英文介面會直接顯示中文，這裡以字串形狀比對目錄。
+// 不掃 smoke、測試段、註解，以及只寫到 stderr 或 expect 的開發者訊息。
+const shape=value=>value.replace(/\{[^}]*\}/g,'\u0000');
+const catalogShapes=new Set(Object.keys(catalog).map(shape));
+const rustFiles=dir=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(entry=>entry.isDirectory()?rustFiles(path.join(dir,entry.name)):[path.join(dir,entry.name)]);
+for (const file of rustFiles(path.join(__dirname,'../src')).filter(name=>name.endsWith('.rs')&&!name.endsWith('smoke.rs'))) {
+  const lines=fs.readFileSync(file,'utf8').split('\n');
+  for (const [index,line] of lines.entries()) {
+    if (line.includes('#[cfg(test)]')) {
+      // 只認檔尾的測試模組；其他位置的 cfg(test) 會讓後面的程式碼漏掃，直接報錯。
+      assert.match(lines[index+1]??'', /^\s*mod \w+/, `Unsupported #[cfg(test)] placement: ${file}:${index+1}`);
+      break;
+    }
+    if (/^\s*\/\//.test(line)||line.includes('eprintln!')||line.includes('.expect(')) continue;
+    for (const [,literal] of line.matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+      if (/[\u3400-\u9fff]/.test(literal)) assert.ok(catalogShapes.has(shape(literal)), `Missing Rust translation: ${path.relative(path.join(__dirname,'..'),file)}:${index+1} ${literal}`);
+    }
+  }
+}
 const state={settings:{pads:[],toggle_shortcut:{control:false,option:false,shift:true,command:true,key:'Space'},width:520,height:null,top_offset:8,side:'right',hot_edge:true,pinned:false},home:true,shortcut_active:true,shortcut_label:'⇧⌘Space',shortcut_error:null};
 ctx.window.render(state); ctx.window.showSettings();
+assert.equal(ids.get('app-version').textContent,'9.9.9','首頁版本須來自代入的版本字串');
+assert.ok(find(ids.get('overlay'),'Open Slide Pad 9.9.9'),'設定頁版本須來自代入的版本字串');
 ids.get('shortcut-control').checked=true;
 ids.get('shortcut-key').value='F19';
 function find(e, label) { if(e.textContent===label)return e; for(const c of e.children){const result=find(c,label);if(result)return result;} }

@@ -1,6 +1,6 @@
 use super::Event;
 use anyhow::Result;
-use sliderust::model::{Pad, web_url};
+use sliderust::model::{Pad, navigation_allowed, web_url};
 use tao::{event_loop::EventLoopProxy, window::Window};
 use wry::{
     NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder,
@@ -32,7 +32,7 @@ pub fn build(
         .with_devtools(false)
         .with_accept_first_mouse(true)
         // 遠端 WebView 不註冊 IPC，也不注入具權限的腳本。
-        .with_navigation_handler(|address| web_url(&address).is_ok())
+        .with_navigation_handler(|address| navigation_allowed(&address))
         .with_new_window_req_handler(move |address, _| {
             if web_url(&address).is_ok() {
                 let _ = popup.send_event(Event::Popup(id, address));
