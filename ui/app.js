@@ -23,11 +23,19 @@ function text(tag, content, className = '') {
   element.className = className;
   return element;
 }
-window.showToast = message => {
-  $('toast').textContent = message;
-  $('toast').hidden = false;
+const TOAST_DURATION_MS = 8000;
+function hideToast() {
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => $('toast').hidden = true, 8000);
+  $('toast').hidden = true;
+}
+function armToastTimer() {
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, TOAST_DURATION_MS);
+}
+window.showToast = message => {
+  $('toast-text').textContent = message;
+  $('toast').hidden = false;
+  armToastTimer();
 };
 window.closeOverlay = () => {
   overlayMode = null;
@@ -126,6 +134,18 @@ function toggle(label, checked, action) {
   control.setAttribute('aria-checked', String(checked));
   return control;
 }
+function sideControl(side) {
+  const group = text('div', '', 'segmented');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', t('側欄位置'));
+  [['left', t('← 左側')], ['right', t('右側 →')]].forEach(([value, label]) => {
+    const option = button(label, () => { if (snapshot.settings.side !== value) send('side'); }, 'segment');
+    option.id = `side-${value}`;
+    option.setAttribute('aria-pressed', String(side === value));
+    group.append(option);
+  });
+  return group;
+}
 function padRow(pad, index, total) {
   const entry = text('div', '', 'site-row');
   const info = text('div', '', 'site-info');
@@ -144,6 +164,35 @@ function padRow(pad, index, total) {
   actions.append(up, down, rename, remove);
   entry.append(info, actions);
   return entry;
+}
+const SHORTCUT_MODIFIERS = [['control','⌃'],['option','⌥'],['shift','⇧'],['command','⌘']];
+function shortcutKeys() {
+  return [['Space', t('空白鍵 Space')],
+    ...Array.from('ABCDEFGHIJKLMNOPQRSTUVWXYZ', letter => [`Key${letter}`, letter]),
+    ...Array.from('0123456789', digit => [`Digit${digit}`, digit]),
+    ...Array.from({length:20}, (_, index) => [`F${index + 1}`, `F${index + 1}`])];
+}
+function fillShortcutDraft(shortcut) {
+  SHORTCUT_MODIFIERS.forEach(([name]) => { $(`shortcut-${name}`).checked = shortcut[name]; });
+  $('shortcut-key').value = shortcut.key;
+}
+function shortcutRecorder(keys) {
+  const recorder = document.createElement('input');
+  Object.assign(recorder, {id:'shortcut-recorder', className:'recorder', readOnly:true, placeholder:t('點這裡，再按下新的組合鍵')});
+  recorder.setAttribute('aria-label', t('錄製快捷鍵'));
+  recorder.onkeydown = event => {
+    if (event.key === 'Tab') return;
+    event.preventDefault();
+    // Esc 只取消錄製，不往上傳到關閉設定的處理器。
+    event.stopPropagation();
+    if (event.key === 'Escape') { recorder.blur(); return; }
+    const key = keys.find(([value]) => value === event.code);
+    if (!key || !(event.metaKey || event.altKey || event.ctrlKey)) return;
+    const shortcut = {control:event.ctrlKey, option:event.altKey, shift:event.shiftKey, command:event.metaKey, key:event.code};
+    fillShortcutDraft(shortcut);
+    recorder.value = SHORTCUT_MODIFIERS.filter(([name]) => shortcut[name]).map(([, symbol]) => symbol).join('') + key[1];
+  };
+  return recorder;
 }
 function shortcutEditor() {
   const form = document.createElement('form');
@@ -165,10 +214,7 @@ function shortcutEditor() {
   keyLabel.htmlFor = 'shortcut-key';
   const select = document.createElement('select');
   select.id = 'shortcut-key';
-  const keys = [['Space',t('空白鍵 Space')],
-    ...Array.from('ABCDEFGHIJKLMNOPQRSTUVWXYZ', letter => [`Key${letter}`, letter]),
-    ...Array.from('0123456789', digit => [`Digit${digit}`, digit]),
-    ...Array.from({length:20}, (_, index) => [`F${index + 1}`, `F${index + 1}`])];
+  const keys = shortcutKeys();
   keys.forEach(([value, label]) => {
     const option = text('option', label);
     option.value = value;
@@ -179,15 +225,13 @@ function shortcutEditor() {
   const reset = button(t('恢復預設'), () => {
     const shortcut = {control:false, option:false, shift:true, command:true, key:'Space'};
     // 已保存預設值時後端狀態不變，仍須清除表單尚未套用的草稿。
-    ['control','option','shift','command'].forEach(name => {
-      $(`shortcut-${name}`).checked = shortcut[name];
-    });
-    select.value = shortcut.key;
+    fillShortcutDraft(shortcut);
+    $('shortcut-recorder').value = '';
     send('set_shortcut', {shortcut});
   }, 'pill');
   reset.id = 'shortcut-reset';
   actions.prepend(reset);
-  form.append(controls, keyLabel, select,
+  form.append(shortcutRecorder(keys), controls, keyLabel, select,
     text('p', t('至少選一個 ⌘、⌥ 或 ⌃。套用後立即生效，下次開啟也會保留。'), 'hint'), actions);
   if (snapshot.shortcut_error) {
     const error = text('p', snapshot.shortcut_error, 'hint danger');
@@ -228,8 +272,7 @@ function renderSettings(element) {
   element.append(row(t('介面語言'), t('切換後立即生效'), languageSelect));
   element.append(text('h3', t('視窗與顯示'), 'section-title'));
   const appearance = text('div', '', 'settings-group');
-  appearance.append(row(t('側欄位置'), t('從螢幕的哪一側開啟'),
-    button(settings.side === 'right' ? t('右側 →') : t('← 左側'), () => send('side'))));
+  appearance.append(row(t('側欄位置'), t('從螢幕的哪一側開啟'), sideControl(settings.side)));
   appearance.append(row(t('觸碰邊緣開啟'), t('游標停留片刻即可滑出'),
     toggle(t('觸碰邊緣開啟'), settings.hot_edge, 'hot_edge')));
   appearance.append(row(t('固定顯示'), t('游標移開時仍保留側欄'),
@@ -299,6 +342,36 @@ function renderPads(state) {
     $('pads').append(element);
   });
 }
+function setReloadMode(stoppable) {
+  const control = $('reload');
+  const label = stoppable ? '停止載入' : '重新整理';
+  control.dataset.action = stoppable ? 'stop' : 'reload';
+  control.classList.toggle('stoppable', stoppable);
+  // 同步 data-i18n 屬性，之後切換語言時 localizeDocument 才會翻成正確的標籤。
+  ['title', 'aria-label'].forEach(attribute => {
+    control.setAttribute(`data-i18n-${attribute}`, label);
+    control.setAttribute(attribute, t(label));
+  });
+}
+function renderLoadState(state) {
+  const loading = !state.home && Boolean(state.loading);
+  const failed = !state.home && Boolean(state.failure);
+  setReloadMode(loading);
+  $('progress').hidden = !loading;
+  // 剛開始還沒有進度時也露出一小段，讓人知道已經在載入。
+  const percent = Math.round(Math.max(state.progress || 0, 0.08) * 100);
+  $('progress-bar').style.width = `${percent}%`;
+  $('progress').setAttribute('aria-valuenow', String(percent));
+  $('load-error').hidden = !failed;
+  // 原頁面還在時才提供退路；首次載入失敗或程序終止沒有頁面可回。
+  $('load-dismiss').hidden = !(failed && state.dismissible);
+  if (!failed) return;
+  const crashed = state.failure === 'crashed';
+  $('load-error-title').textContent = crashed ? t('網頁意外停止') : t('無法載入這個頁面');
+  $('load-error-detail').textContent = crashed
+    ? t('這個網頁的處理程序已結束，重新載入即可繼續。') : t('請檢查網路連線或網址，然後再試一次。');
+  $('load-error-address').textContent = state.address || '';
+}
 window.render = state => {
   const nextLanguage = state.settings.language || 'en';
   const languageChanged = language !== nextLanguage;
@@ -326,13 +399,14 @@ window.render = state => {
   $('forward').disabled = state.home || !state.forward;
   if (document.activeElement !== $('address')) $('address').value = state.home ? '' : (state.address || '');
   $('status').classList.toggle('loading', !state.home && state.loading);
-  const label = state.home ? (language === 'en' && settings.pads.length === 1 ? '1 site' : t('{count} 個網站', {count:settings.pads.length})) : state.loading ? t('正在載入…') : state.title || t('準備就緒');
+  renderLoadState(state);
+  const label = state.home ? t('首頁') : state.failure ? t('載入失敗') : state.loading ? t('正在載入…') : state.title || t('準備就緒');
   $('status-text').replaceChildren(text('i', '', 'dot'), document.createTextNode(label));
   $('undo-remove').hidden = !state.undo_title;
   $('undo-remove').title = state.undo_title ? t('復原「{name}」', {name:state.undo_title}) : '';
-  $('status-shortcut').hidden = Boolean(state.undo_title);
+  $('status-shortcut').hidden = state.home || Boolean(state.undo_title);
   $('status-shortcut').textContent = state.shortcut_active ? state.shortcut_label : t('快捷鍵未啟用');
-  $('home-shortcut').textContent = state.shortcut_active ? state.shortcut_label : t('選單列 ◧');
+  $('home-shortcut').textContent = state.shortcut_active ? state.shortcut_label : t('選單列圖示');
   if ((settingsChanged || shortcutChanged) && overlayMode === 'settings') {
     const languageFocused = document.activeElement?.id === 'language-select';
     renderSettings($('overlay'));
@@ -344,6 +418,10 @@ document.querySelectorAll('[data-action]').forEach(element => {
 });
 $('add').onclick = $('hero-add').onclick = () => send('new_pad');
 $('settings').onclick = () => send('show_settings');
+$('toast-close').onclick = hideToast;
+// 滑鼠停在提示上時不倒數，避免訊息還沒讀完就消失。
+$('toast').onmouseenter = () => clearTimeout(toastTimer);
+$('toast').onmouseleave = armToastTimer;
 $('resize-grip').onpointerdown = event => {
   if (event.button !== 0) return;
   event.preventDefault();

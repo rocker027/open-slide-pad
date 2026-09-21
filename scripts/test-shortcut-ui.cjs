@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ids = new Map();
 class Element {
-  constructor(tag) { this.tagName=tag; this.children=[]; this.classList={toggle(){}}; this.textContent=''; this.attributes={}; }
+  constructor(tag) { this.tagName=tag; this.children=[]; this.classList={toggle(){}}; this.textContent=''; this.attributes={}; this.dataset={}; this.style={}; }
   set id(id) { this._id=id; ids.set(id,this); }
   get id() { return this._id; }
   append(...items) { for(const item of items) { item.parent=this; this.children.push(item); } }
@@ -16,12 +16,14 @@ class Element {
   setAttribute(name, value) { this.attributes[name]=value; }
   remove() { this.parent.children.splice(this.parent.children.indexOf(this),1); }
   focus() { ctx.document.activeElement=this; } select() {}
+  blur() { if(ctx.document.activeElement===this) ctx.document.activeElement=null; }
 }
-for(const id of ['pads','home','home-button','site-count','saved-sites','empty-state','suggestions','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','resize-grip','app-version']) {
+for(const id of ['pads','home','home-button','site-count','saved-sites','empty-state','suggestions','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','toast-text','toast-close','resize-grip','app-version','reload','progress','progress-bar','load-error','load-error-title','load-error-detail','load-error-address','load-dismiss']) {
  const e=new Element('div'); e.id=id; e.append(new Element('#text'));
 }
 const sent=[];
-const ctx={URL,window:{ipc:{postMessage(m){sent.push(JSON.parse(m));}}},document:{documentElement:{dataset:{}},createElement:t=>new Element(t),createTextNode:t=>Object.assign(new Element('#text'),{textContent:t}),getElementById:id=>ids.get(id),querySelectorAll:()=>[],addEventListener(){}},setTimeout(){},clearTimeout(){}};
+const timers=[];
+const ctx={URL,window:{ipc:{postMessage(m){sent.push(JSON.parse(m));}}},document:{documentElement:{dataset:{}},createElement:t=>new Element(t),createTextNode:t=>Object.assign(new Element('#text'),{textContent:t}),getElementById:id=>ids.get(id),querySelectorAll:()=>[],addEventListener(){}},setTimeout(callback){timers.push(callback);return timers.length;},clearTimeout(id){if(id)timers[id-1]=null;}};
 vm.createContext(ctx);
 const sourcePath = process.argv[2] || path.join(__dirname, '../ui/app.js');
 const catalog=JSON.parse(fs.readFileSync(path.join(__dirname, '../ui/locales/en.json'), 'utf8'));
@@ -78,12 +80,65 @@ find(ids.get('overlay'),'Use full height').onclick();
 assert.deepEqual(sent.at(-1),{action:'full_height'});
 console.log('PASS resize grip routes primary pointer and full-height commands');
 
+// 錄製快捷鍵只填表單草稿，不直接送出；Esc 只取消錄製，不關閉設定。
+const recorder=ids.get('shortcut-recorder');
+const keydown=fields=>{const event={key:'',code:'',metaKey:false,altKey:false,ctrlKey:false,shiftKey:false,prevented:false,stopped:false,preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;},...fields};recorder.onkeydown(event);return event;};
+const sentBeforeRecording=sent.length;
+keydown({key:'k',code:'KeyK',metaKey:true,shiftKey:true});
+assert.deepEqual(['control','option','shift','command'].map(name=>ids.get(`shortcut-${name}`).checked),[false,false,true,true]);
+assert.equal(ids.get('shortcut-key').value,'KeyK');
+assert.equal(recorder.value,'⇧⌘K');
+keydown({key:'j',code:'KeyJ'});
+assert.equal(ids.get('shortcut-key').value,'KeyK','沒有 ⌘、⌥、⌃ 的按鍵不可成為草稿');
+keydown({key:'Enter',code:'Enter',metaKey:true});
+assert.equal(ids.get('shortcut-key').value,'KeyK','下拉選單沒有的按鍵不可成為草稿');
+keydown({key:'Meta',code:'MetaLeft',metaKey:true});
+assert.equal(ids.get('shortcut-key').value,'KeyK','只按修飾鍵不算組合');
+recorder.focus();
+const escape=keydown({key:'Escape',code:'Escape'});
+assert.equal(escape.stopped,true,'錄製中的 Esc 不可傳到關閉設定的處理器');
+assert.notEqual(ctx.document.activeElement,recorder,'Esc 取消錄製');
+const tab=keydown({key:'Tab',code:'Tab'});
+assert.equal(tab.prevented,false,'Tab 保留給鍵盤導覽');
+assert.equal(sent.length,sentBeforeRecording,'錄製不可直接送出命令');
+find(ids.get('shortcut-form'),'Reset to default').onclick();
+assert.equal(recorder.value,'','恢復預設也要清掉錄製欄，否則會與表單草稿不符');
+console.log('PASS shortcut recorder fills the draft from a key press and keeps Escape local');
+
+// 左右位置：只有點另一側才切換。
+assert.equal(ids.get('side-right').attributes['aria-pressed'],'true');
+assert.equal(ids.get('side-left').attributes['aria-pressed'],'false');
+const sentBeforeSide=sent.length;
+ids.get('side-right').onclick();
+assert.equal(sent.length,sentBeforeSide,'已在右側時點右側不送命令');
+ids.get('side-left').onclick();
+assert.deepEqual(sent.at(-1),{action:'side'});
+console.log('PASS side control only toggles when the other side is chosen');
+
+// 提示可手動關閉，滑鼠停留時暫停倒數。
+ctx.window.showToast('disk full');
+assert.equal(ids.get('toast-text').textContent,'disk full');
+assert.equal(ids.get('toast').hidden,false);
+const armed=timers.filter(Boolean).length;
+ids.get('toast').onmouseenter();
+assert.equal(timers.filter(Boolean).length,armed-1,'滑鼠停留時取消倒數');
+ids.get('toast').onmouseleave();
+assert.equal(timers.filter(Boolean).length,armed,'滑鼠離開後重新倒數');
+timers.filter(Boolean).at(-1)();
+assert.equal(ids.get('toast').hidden,true,'倒數結束後收起');
+ctx.window.showToast('again');
+ids.get('toast-close').onclick();
+assert.equal(ids.get('toast').hidden,true,'關閉鈕立即收起');
+console.log('PASS toast can be dismissed and pauses while hovered');
+
 // 首頁使用相同的網站順序與 select IPC，最後一個網站移除後回到空狀態。
 const populated=JSON.parse(JSON.stringify(state));
 populated.settings.pads=[{id:7,title:'工作筆記',url:'https://www.notion.so/team'},
   {id:12,title:'<img src=x onerror=alert(1)>',url:'https://example.com'}];
 ctx.window.render(populated);
 assert.equal(ids.get('site-count').textContent,'2');
+assert.equal(ids.get('status-text').children.at(-1).textContent,'Home','首頁狀態列不重複網站數');
+assert.equal(ids.get('status-shortcut').hidden,true,'首頁說明區已有快捷鍵，狀態列不重複');
 assert.equal(ids.get('empty-state').hidden,true);
 assert.equal(ids.get('suggestions').open,false);
 const sites=ids.get('saved-sites').children;
@@ -100,6 +155,40 @@ assert.equal(ids.get('empty-state').hidden,false);
 assert.equal(ids.get('saved-sites').children.length,0);
 assert.equal(ids.get('suggestions').open,true);
 console.log('PASS home list selects saved sites, preserves text and restores empty state');
+
+// 載入中：進度條與「停止」；失敗：錯誤畫面與網址；首頁一律不顯示載入狀態。
+const page={...populated,home:false,title:'Docs',address:'https://example.com/docs'};
+ctx.window.render({...page,loading:true,progress:0.42});
+assert.equal(ids.get('progress').hidden,false);
+assert.equal(ids.get('progress-bar').style.width,'42%');
+assert.equal(ids.get('progress').attributes['aria-valuenow'],'42');
+assert.equal(ids.get('reload').dataset.action,'stop','載入中按鈕改為停止');
+assert.equal(ids.get('reload').attributes.title,'Stop loading');
+assert.equal(ids.get('reload').attributes['data-i18n-title'],'停止載入','切換語言時仍要翻成停止');
+ctx.window.render({...page,loading:true,progress:0});
+assert.equal(ids.get('progress-bar').style.width,'8%','尚無進度時仍露出一小段');
+ctx.window.render({...page,loading:false,progress:0});
+assert.equal(ids.get('progress').hidden,true);
+assert.equal(ids.get('reload').dataset.action,'reload');
+assert.equal(ids.get('reload').attributes.title,'Reload');
+assert.equal(ids.get('load-error').hidden,true);
+ctx.window.render({...page,failure:'unreachable',address:'http://127.0.0.1:1/'});
+assert.equal(ids.get('load-error').hidden,false);
+assert.equal(ids.get('load-error-title').textContent,'This page could not be loaded');
+assert.equal(ids.get('load-error-address').textContent,'http://127.0.0.1:1/');
+assert.equal(ids.get('load-dismiss').hidden,true,'沒有原頁面可回時不顯示退路');
+ctx.window.render({...page,failure:'unreachable',dismissible:true});
+assert.equal(ids.get('load-dismiss').hidden,false,'原頁面還在時可以回去');
+assert.equal(ids.get('status-text').children.at(-1).textContent,'Could not load');
+ctx.window.render({...page,failure:'crashed'});
+assert.equal(ids.get('load-error-title').textContent,'This page stopped unexpectedly');
+ctx.window.render({...page,dismissible:true});
+assert.equal(ids.get('load-dismiss').hidden,true,'沒有失敗就不顯示退路');
+ctx.window.render({...page,home:true,loading:true,failure:'unreachable'});
+assert.equal(ids.get('load-error').hidden,true,'首頁不顯示網站的失敗畫面');
+assert.equal(ids.get('progress').hidden,true,'首頁不顯示網站的載入進度');
+assert.equal(ids.get('reload').dataset.action,'reload');
+console.log('PASS load state drives the progress bar, stop control and failure screen');
 
 // 未收到保存成功的狀態之前，select 與畫面都維持目前語言。
 assert.equal(ctx.document.documentElement.lang,'en');

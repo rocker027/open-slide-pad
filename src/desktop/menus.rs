@@ -1,9 +1,9 @@
-use super::{Event, chrome::Command};
+use super::{Event, chrome::Command, status_icon};
 use anyhow::Result;
 use sliderust::i18n::Language;
 use tao::event_loop::EventLoopProxy;
 use tray_icon::{
-    TrayIcon, TrayIconBuilder,
+    Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{
         Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
         accelerator::{Accelerator, Code, Modifiers},
@@ -60,11 +60,30 @@ pub fn build(proxy: EventLoopProxy<Event>, language: Language) -> Result<(TrayIc
     let toggle = labels.item("toggle", "顯示／收合 Open Slide Pad", None);
     let quit = labels.item("quit", "結束 Open Slide Pad", None);
     let tray_menu = Menu::with_items(&[&toggle, &PredefinedMenuItem::separator(), &quit])?;
+    // 左鍵直接顯示／收合，右鍵才開選單；最常做的動作不必先經過選單。
     let tray = TrayIconBuilder::new()
-        .with_title("◧")
+        .with_icon(Icon::from_rgba(
+            status_icon::rgba(),
+            status_icon::SIZE,
+            status_icon::SIZE,
+        )?)
+        .with_icon_as_template(true)
+        .with_menu_on_left_click(false)
         .with_tooltip("Open Slide Pad")
         .with_menu(Box::new(tray_menu))
         .build()?;
+    let tray_proxy = proxy.clone();
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        // 按下與放開各回報一次，只在放開時切換。
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            let _ = tray_proxy.send_event(Event::Toggle);
+        }
+    }));
 
     let app_menu = Menu::new();
     let app_submenu = Submenu::new("Open Slide Pad", true);
@@ -105,6 +124,7 @@ pub fn build(proxy: EventLoopProxy<Event>, language: Language) -> Result<(TrayIc
         &labels.item("back", "上一頁", shortcut(Code::BracketLeft)),
         &labels.item("forward", "下一頁", shortcut(Code::BracketRight)),
         &labels.item("reload", "重新載入", shortcut(Code::KeyR)),
+        &labels.item("stop", "停止載入", shortcut(Code::Period)),
     ])?;
 
     let sites = labels.submenu("網站");
@@ -144,6 +164,7 @@ pub fn build(proxy: EventLoopProxy<Event>, language: Language) -> Result<(TrayIc
             "back" => Some(Event::Command(Command::Back)),
             "forward" => Some(Event::Command(Command::Forward)),
             "reload" => Some(Event::Command(Command::Reload)),
+            "stop" => Some(Event::Command(Command::Stop)),
             id => id
                 .strip_prefix("select_pad_")
                 .and_then(|index| index.parse::<usize>().ok())

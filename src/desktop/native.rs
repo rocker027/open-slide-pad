@@ -45,11 +45,21 @@ pub fn set_frame(host: &Window, frame: Frame) {
         true,
     );
 }
-pub fn animate_frame(host: &Window, target: Frame, progress: f64, right: bool) {
-    let eased = 1.0 - (1.0 - progress).powi(3);
-    let offset = (1.0 - eased) * if right { 44.0 } else { -44.0 };
+pub fn animate_frame(host: &Window, target: Frame, offset: f64, opacity: f64) {
     window(host).setFrameOrigin(NSPoint::new(target.left + offset, target.bottom));
-    window(host).setAlphaValue(eased);
+    window(host).setAlphaValue(opacity);
+}
+/// 本機 Safari 的版本（例如 "18.6"）；讀不到就交給呼叫端決定替代值。
+pub fn safari_version() -> Option<String> {
+    use objc2_foundation::{NSBundle, NSString};
+    let safari = NSBundle::bundleWithPath(&NSString::from_str("/Applications/Safari.app"))?;
+    let version =
+        safari.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))?;
+    Some(version.downcast::<NSString>().ok()?.to_string())
+}
+/// 系統設定「輔助使用 → 顯示器 → 減少動態效果」。
+pub fn reduce_motion() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 pub fn opacity(host: &Window, opacity: f64) {
     window(host).setAlphaValue(opacity);

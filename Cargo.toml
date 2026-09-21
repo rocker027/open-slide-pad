@@ -23,6 +23,8 @@ global-hotkey = "0.7"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSScreen", "NSWindow", "NSApplication"] }
 objc2-foundation = "0.3"
+# wry 已帶入同一版；直接相依只為了啟用它沒開的上一頁／下一頁清單綁定。
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKBackForwardList", "WKBackForwardListItem"] }
 
 [profile.release]
 lto = "thin"

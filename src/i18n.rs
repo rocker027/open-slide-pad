@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::LazyLock};
 pub const ENGLISH_CATALOG: &str = include_str!("../ui/locales/en.json");
 static ENGLISH: LazyLock<BTreeMap<String, String>> =
     LazyLock::new(|| serde_json::from_str(ENGLISH_CATALOG).expect("valid translation catalog"));
-// 由長到短排序只算一次：先比對具體訊息，避免「{count} 個網站」吃掉「最多保留 {count} 個網站」。
+// 由長到短排序只算一次：先比對具體訊息，避免較短的模板吃掉較長模板的一部分。
 static TEMPLATES: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::new(|| {
     let mut templates: Vec<_> = ENGLISH
         .iter()

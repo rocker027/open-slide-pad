@@ -46,6 +46,8 @@ pub enum Command {
     Back,
     Forward,
     Reload,
+    Stop,
+    DismissFailure,
     Home,
     Hide,
     Pin,
@@ -101,6 +103,27 @@ fn document() -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::browser::{RAIL_WIDTH, STATUS_HEIGHT, TOOLBAR_HEIGHT};
+
+    /// 原生網頁視圖的位置由 Rust 常數決定，控制面板由 CSS 決定；兩邊不一致時網頁會蓋住工具列或留下空隙。
+    #[test]
+    fn stylesheet_layout_matches_the_native_page_bounds() {
+        let stylesheet = include_str!("../../ui/style.css");
+        for (property, expected) in [
+            ("--rail-width", RAIL_WIDTH),
+            ("--toolbar-height", TOOLBAR_HEIGHT),
+            ("--status-height", STATUS_HEIGHT),
+        ] {
+            let declarations: Vec<_> = stylesheet
+                .match_indices(&format!("{property}: "))
+                .map(|(start, matched)| &stylesheet[start + matched.len()..])
+                .filter_map(|rest| rest.split_once(';'))
+                .map(|(value, _)| value)
+                .collect();
+            assert_eq!(declarations, [format!("{expected}px")], "{property}");
+        }
+    }
+
     #[test]
     fn document_replaces_every_placeholder_and_embeds_the_package_version() {
         let document = super::document();

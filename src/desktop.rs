@@ -2,19 +2,24 @@ mod browser;
 mod chrome;
 mod menus;
 mod native;
+mod pad;
 mod resize;
 mod shortcuts;
 mod smoke;
+mod status_icon;
 
 use anyhow::{Context, Result, ensure};
 use chrome::Command;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use pad::BrowserPad;
 use serde_json::json;
 use sliderust::{
+    load::{LoadFailure, LoadWatch},
     model::{Pad, Settings, Side, normalize_address, web_url},
-    panel::{Activity, AutoHide, EdgeTrigger, Frame, OpenedBy, POLL_TICK},
+    panel::{Activity, AutoHide, EdgeTrigger, Frame, OpenedBy, POLL_TICK, SLIDE_DURATION, slide},
     shortcut::ShortcutBinding,
     storage::{SaveOutcome, SettingsStore},
+    user_agent::safari_user_agent,
 };
 use std::{
     collections::HashMap,
@@ -38,17 +43,11 @@ pub enum Event {
     Quit,
     Title(u64, String),
     Load(u64, bool, String),
+    Crashed(u64),
     Popup(u64, String),
     SmokeResult(&'static str, bool),
 }
 
-struct BrowserPad {
-    view: WebView,
-    title: String,
-    address: String,
-    loading: bool,
-    history: (bool, bool),
-}
 struct App {
     // WebViews 必須比宿主 Window 更早釋放。
     chrome: WebView,
@@ -78,6 +77,7 @@ struct App {
     shortcut_error: Option<String>,
     resize_origin: Option<Frame>,
     pointer_resize: Option<resize::PointerResize>,
+    user_agent: String,
 }
 
 pub fn run() -> Result<()> {
@@ -223,6 +223,7 @@ impl App {
             shortcut_error,
             resize_origin: None,
             pointer_resize: None,
+            user_agent: safari_user_agent(native::safari_version().as_deref()),
         };
         app.update_shortcut_tooltip();
         app.show(OpenedBy::Request)?;
@@ -334,6 +335,7 @@ impl App {
                 self.frame.width,
                 self.frame.height,
                 self.smoke,
+                &self.user_agent,
             )?;
             self.pads.insert(
                 id,
@@ -341,20 +343,47 @@ impl App {
                     view,
                     title: pad.title.clone(),
                     address: pad.url.clone(),
-                    loading: true,
+                    pending: Some(pad.url.clone()),
+                    load: LoadWatch::requested(),
+                    progress: 0.0,
                     history: (false, false),
                 },
             );
         }
         for (id, pad) in &self.pads {
-            pad.view
-                .set_visible(!self.home && !self.overlay && self.settings.active == Some(*id))?;
+            // 失敗畫面畫在控制面板上；原生網頁視圖永遠蓋在 HTML 上面，所以要先藏起來。
+            let shown = !self.home
+                && !self.overlay
+                && self.settings.active == Some(*id)
+                && pad.load.failure().is_none();
+            pad.view.set_visible(shown)?;
         }
         self.layout()
     }
     fn render(&self) -> Result<()> {
         let active = self.settings.active.and_then(|id| self.pads.get(&id));
-        let payload = json!({ "settings": self.settings.without_unknown_fields(), "shortcut_label": self.settings.toggle_shortcut.label(), "shortcut_active": self.shortcut_binding.active().is_some(), "shortcut_error": self.shortcut_error.as_ref().map(|error| self.settings.language.text(error)), "home": self.home, "undo_title": self.last_removed.as_ref().map(|(pad,_)| &pad.title), "title": active.map(|p| &p.title), "address": active.map(|p| &p.address), "loading": active.is_some_and(|p| p.loading), "back": active.is_some_and(|p| unsafe { p.view.webview().canGoBack() }), "forward": active.is_some_and(|p| unsafe { p.view.webview().canGoForward() }) });
+        let failure = active.and_then(|pad| pad.load.failure());
+        let payload = json!({
+            "settings": self.settings.without_unknown_fields(),
+            "shortcut_label": self.settings.toggle_shortcut.label(),
+            "shortcut_active": self.shortcut_binding.active().is_some(),
+            "shortcut_error": self.shortcut_error.as_ref().map(|error| self.settings.language.text(error)),
+            "home": self.home,
+            "undo_title": self.last_removed.as_ref().map(|(pad, _)| &pad.title),
+            "title": active.map(|pad| &pad.title),
+            "address": active.map(|pad| failure.and(pad.pending.as_ref()).unwrap_or(&pad.address)),
+            "loading": active.is_some_and(|pad| pad.load.is_loading()),
+            "progress": active.map_or(0.0, |pad| pad.progress),
+            // 載入失敗時 WebKit 會改為顯示 about:blank，原頁面留在歷史裡；找得到才有路可回。
+            "dismissible": failure == Some(LoadFailure::Unreachable)
+                && active.is_some_and(|pad| browser::has_previous_page(&pad.view)),
+            "failure": failure.map(|failure| match failure {
+                LoadFailure::Unreachable => "unreachable",
+                LoadFailure::Crashed => "crashed",
+            }),
+            "back": active.is_some_and(|pad| unsafe { pad.view.webview().canGoBack() }),
+            "forward": active.is_some_and(|pad| unsafe { pad.view.webview().canGoForward() }),
+        });
         self.chrome
             .evaluate_script(&format!("window.render({payload})"))?;
         Ok(())
@@ -381,12 +410,27 @@ impl App {
             }
             Event::Load(id, finished, address) => {
                 if let Some(pad) = self.pads.get_mut(&id) {
-                    pad.loading = !finished;
+                    // 首次載入失敗時 WebKit 會改為 commit about:blank 並回報完成；
+                    // 那不是 App 要求的頁面，不能算載入成功，交給輪詢判定失敗。
                     if web_url(&address).is_ok() {
+                        if finished {
+                            pad.load.finished();
+                        } else {
+                            pad.load.committed();
+                        }
+                        pad.pending = None;
                         pad.address = address;
                     }
                     self.page_loaded |= finished;
                 }
+                // 有內容可顯示了：失敗畫面結束，把原生網頁視圖放回來。
+                self.sync_views()?;
+            }
+            Event::Crashed(id) => {
+                if let Some(pad) = self.pads.get_mut(&id) {
+                    pad.load.crashed();
+                }
+                self.sync_views()?;
             }
             Event::Popup(id, address) => {
                 if let Some(pad) = self.pads.get(&id) {
@@ -463,7 +507,11 @@ impl App {
                 }
             }
             Command::Navigate { address } => self.navigate(&address)?,
-            Command::Back | Command::Forward | Command::Reload => self.navigation(command),
+            Command::Back
+            | Command::Forward
+            | Command::Reload
+            | Command::Stop
+            | Command::DismissFailure => self.navigation(command)?,
             Command::Home => {
                 self.home = true;
                 self.overlay = false;
@@ -558,29 +606,46 @@ impl App {
                 pad.url = address.clone();
             }
             self.commit(updated)?;
-            if let Some(pad) = self.pads.get(&id) {
+            if let Some(pad) = self.pads.get_mut(&id) {
                 pad.view.load_url(&address)?;
+                pad.pending = Some(address);
+                pad.load.request();
             }
         }
         Ok(())
     }
-    fn navigation(&self, command: Command) {
-        if let Some(pad) = self.settings.active.and_then(|id| self.pads.get(&id)) {
-            // 已在主執行緒，Wry 保持 WKWebView 的所有權。
-            unsafe {
-                match command {
-                    Command::Back => {
-                        pad.view.webview().goBack();
-                    }
-                    Command::Forward => {
-                        pad.view.webview().goForward();
-                    }
-                    _ => {
-                        pad.view.webview().reload();
-                    }
+    fn navigation(&mut self, command: Command) -> Result<()> {
+        let Some(pad) = self.settings.active.and_then(|id| self.pads.get_mut(&id)) else {
+            return Ok(());
+        };
+        // 已在主執行緒，Wry 保持 WKWebView 的所有權。
+        match command {
+            Command::Back => unsafe {
+                pad.view.webview().goBack();
+            },
+            Command::Forward => unsafe {
+                pad.view.webview().goForward();
+            },
+            // 選單的「停止載入」隨時可按；沒有載入可停時（含錯誤畫面上）不可動到「重試」要用的網址。
+            Command::Stop if pad.load.is_loading() => {
+                unsafe { pad.view.webview().stopLoading() };
+                pad.load.stopped();
+                // 放棄的網址不可留著：之後若程序終止，「重試」應載入目前頁面而不是它。
+                pad.pending = None;
+            }
+            Command::Stop => {}
+            // 與畫面上按鈕的顯示條件相同：連不上、而且歷史裡找得到原頁面才生效。
+            // 原頁面 commit 後失敗畫面才結束，這段期間仍顯示錯誤畫面。
+            Command::DismissFailure => {
+                if pad.load.failure() == Some(LoadFailure::Unreachable)
+                    && browser::go_to_previous_page(&pad.view)
+                {
+                    pad.pending = None;
                 }
             }
+            _ => pad.reload()?,
         }
+        Ok(())
     }
     fn open_external(&self) -> Result<()> {
         if let Some(pad) = self.settings.active.and_then(|id| self.pads.get(&id)) {
@@ -601,8 +666,10 @@ impl App {
         let Some(pad) = self.settings.active.and_then(|id| self.pads.get_mut(&id)) else {
             return Ok(false);
         };
+        // 載入狀態要先讀：首次載入失敗時原生 URL 是空的，下面會提早返回。
+        let load_changed = pad.refresh_load();
         let Some(address) = browser::current_url(&pad.view) else {
-            return Ok(false);
+            return Ok(load_changed);
         };
         let history = unsafe {
             (
@@ -616,7 +683,7 @@ impl App {
             pad.address = address;
         }
         pad.history = history;
-        Ok(changed)
+        Ok(changed || load_changed)
     }
     fn tick(&mut self, flow: &mut ControlFlow) -> Result<()> {
         if self.poll_resize()? {
@@ -627,6 +694,7 @@ impl App {
         {
             self.navigation_checked = now;
             if self.refresh_navigation()? {
+                self.sync_views()?;
                 self.render()?;
             }
         }
@@ -638,13 +706,14 @@ impl App {
             self.smoke_probe = Some(probe);
         }
         if let Some((start, opening)) = self.animation {
-            let progress = (now.duration_since(start).as_secs_f64() / 0.18).min(1.0);
-            native::animate_frame(
-                &self.window,
-                self.frame,
+            let progress =
+                (now.duration_since(start).as_secs_f64() / SLIDE_DURATION.as_secs_f64()).min(1.0);
+            let (offset, opacity) = slide(
                 if opening { progress } else { 1.0 - progress },
-                self.settings.side == Side::Right,
+                self.settings.side,
+                native::reduce_motion(),
             );
+            native::animate_frame(&self.window, self.frame, offset, opacity);
             if progress >= 1.0 {
                 self.animation = None;
                 if !opening {

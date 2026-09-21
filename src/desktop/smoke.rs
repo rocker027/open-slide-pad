@@ -4,12 +4,12 @@ use anyhow::{Context, Result, ensure};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
 use objc2_foundation::{NSPoint, NSString};
-use sliderust::{i18n::Language, shortcut::Shortcut};
+use sliderust::{i18n::Language, load::LoadFailure, shortcut::Shortcut};
 use std::time::{Duration, Instant};
 use tao::event_loop::ControlFlow;
 use wry::{WebView, WebViewExtMacOS};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 enum Stage {
     #[default]
     Page,
@@ -31,6 +31,12 @@ enum Stage {
     LanguageChinese,
     LanguageRestored,
     LanguageEnglish,
+    LoadFailure,
+    LoadFailureResult,
+    LoadRetry,
+    LoadDismiss,
+    LoadDismissRetried,
+    LoadDismissed,
     Done,
 }
 
@@ -45,11 +51,16 @@ pub struct Probe {
     language_result: Option<bool>,
     language_settings: Option<sliderust::model::Settings>,
     frames_result: Option<bool>,
+    user_agent_result: Option<bool>,
+    load_failure_result: Option<bool>,
     frames_started: Option<Instant>,
     frames_polled: Option<Instant>,
     frames_loaded: Option<Instant>,
     started: Option<Instant>,
 }
+
+// 本機沒有服務監聽的埠：連線立刻被拒，用來重現「載入失敗」。
+const UNREACHABLE: &str = "http://127.0.0.1:1/";
 
 // 三個 iframe 各自向上層回報載入：srcdoc 與 blob 應放行，data: 應被導覽規則擋下。
 const EMBED_FRAMES: &str = r#"(() => {
@@ -71,6 +82,8 @@ impl Probe {
             "shortcut_label" => self.shortcut_label_result = Some(passed),
             "resize_layout" => self.resize_layout_result = Some(passed),
             "language" => self.language_result = Some(passed),
+            "user_agent" => self.user_agent_result = Some(passed),
+            "load_failure" => self.load_failure_result = Some(passed),
             // 一旦看過 data: 文件載入就維持失敗，不被之後的回報蓋掉。
             "frames" => self.frames_result = Some(passed && self.frames_result != Some(false)),
             _ => {}
@@ -78,15 +91,24 @@ impl Probe {
     }
     pub fn poll(&mut self, app: &mut App, flow: &mut ControlFlow) -> Result<()> {
         let start = *self.started.get_or_insert_with(Instant::now);
-        ensure!(start.elapsed() < Duration::from_secs(25), "原生 smoke 逾時");
+        ensure!(
+            start.elapsed() < Duration::from_secs(25),
+            "原生 smoke 逾時，停在 {:?}",
+            self.stage
+        );
         match self.stage {
             Stage::Page if app.chrome_ready && app.page_loaded => {
+                verify_user_agent(app)?;
                 active_view(app)?.evaluate_script(EMBED_FRAMES)?;
                 self.frames_started = Some(Instant::now());
                 self.stage = Stage::Frames;
             }
             Stage::Frames => {
                 if self.frames_settled(app)? {
+                    ensure!(
+                        self.user_agent_result == Some(true),
+                        "遠端網頁看到的 User-Agent 與 App 設定的不一致"
+                    );
                     let view = active_view(app)?;
                     view.evaluate_script("history.pushState({}, '', '/sliderust-smoke')")?;
                     self.stage = Stage::Spa;
@@ -262,12 +284,90 @@ impl Probe {
                     // 翻譯後的選單仍使用原本的原生快捷鍵。
                     shortcut("l", 0x25)?;
                     verify_select_policy(app, flow)?;
-                    eprintln!(
-                        "SMOKE chrome_ready=true remote_page_loaded=true embedded_frames=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true english_default=true language_ipc=true language_persistence=true language_rollback=true language_menus=true language_preserves_sites=true select_policy=true"
-                    );
-                    self.stage = Stage::Done;
-                    *flow = ControlFlow::Exit;
+                    app.handle(
+                        Event::Command(Command::Add {
+                            address: UNREACHABLE.to_owned(),
+                        }),
+                        flow,
+                    )?;
+                    ensure!(active_pad(app)?.load.is_loading(), "新網站未進入載入狀態");
+                    self.stage = Stage::LoadFailure;
                 }
+            }
+            Stage::LoadFailure if load_failed(app)? => {
+                inspect(
+                    app,
+                    "load_failure",
+                    &format!(
+                        "!document.getElementById('load-error').hidden && document.getElementById('load-error-address').textContent === '{UNREACHABLE}' && document.getElementById('progress').hidden && document.getElementById('reload').dataset.action === 'reload'"
+                    ),
+                )?;
+                self.stage = Stage::LoadFailureResult;
+            }
+            Stage::LoadFailureResult => {
+                if let Some(passed) = self.load_failure_result.take() {
+                    ensure!(passed, "載入失敗時未顯示錯誤畫面與原本要求的網址");
+                    // 錯誤畫面上沒有載入可停、首次載入失敗也沒有頁面可回：兩個命令都不可改變狀態。
+                    app.handle(Event::Command(Command::Stop), flow)?;
+                    app.handle(Event::Command(Command::DismissFailure), flow)?;
+                    let pad = active_pad(app)?;
+                    ensure!(
+                        pad.pending.as_deref() == Some(UNREACHABLE)
+                            && pad.load.failure() == Some(LoadFailure::Unreachable),
+                        "錯誤畫面上的停止／返回改掉了重試要用的網址或失敗狀態"
+                    );
+                    app.handle(Event::Command(Command::Reload), flow)?;
+                    ensure!(
+                        active_pad(app)?.load.is_loading(),
+                        "失敗畫面上的重試未重新開始載入"
+                    );
+                    self.stage = Stage::LoadRetry;
+                }
+            }
+            Stage::LoadRetry if load_failed(app)? => {
+                // 回到可用的網站：失敗狀態只屬於那個分頁，原生網頁視圖要回來。
+                let working = app.settings.pads[0].id;
+                app.handle(Event::Command(Command::Select { id: working }), flow)?;
+                let pad = active_pad(app)?;
+                ensure!(
+                    pad.load.failure().is_none() && !pad.view.webview().isHidden(),
+                    "切回正常網站後仍停在失敗狀態"
+                );
+                // 在已有內容的分頁用網址列導覽到連不上的網址：原頁面還在，錯誤畫面要能關掉。
+                app.handle(
+                    Event::Command(Command::Navigate {
+                        address: UNREACHABLE.to_owned(),
+                    }),
+                    flow,
+                )?;
+                self.stage = Stage::LoadDismiss;
+            }
+            Stage::LoadDismiss if load_failed(app)? => {
+                // 先重試一次再回去：重試失敗不可讓原頁面離得更遠。
+                app.handle(Event::Command(Command::Reload), flow)?;
+                self.stage = Stage::LoadDismissRetried;
+            }
+            Stage::LoadDismissRetried if load_failed(app)? => {
+                ensure!(
+                    browser::has_previous_page(&active_pad(app)?.view),
+                    "網址列導覽失敗後歷史中找不到原頁面"
+                );
+                app.handle(Event::Command(Command::DismissFailure), flow)?;
+                self.stage = Stage::LoadDismissed;
+            }
+            Stage::LoadDismissed if active_pad(app)?.load.failure().is_none() => {
+                let pad = active_pad(app)?;
+                ensure!(
+                    !pad.view.webview().isHidden()
+                        && browser::current_url(&pad.view)
+                            .is_some_and(|url| url.starts_with("https://example.com/")),
+                    "「回到原本的頁面」後未回到原頁面"
+                );
+                eprintln!(
+                    "SMOKE chrome_ready=true remote_page_loaded=true user_agent=true embedded_frames=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true english_default=true language_ipc=true language_persistence=true language_rollback=true language_menus=true language_preserves_sites=true select_policy=true load_failure_screen=true load_retry=true load_dismiss=true"
+                );
+                self.stage = Stage::Done;
+                *flow = ControlFlow::Exit;
             }
             _ => {}
         }
@@ -312,6 +412,23 @@ impl Probe {
         }
         Ok(false)
     }
+}
+
+/// 網站靠 UA 判斷瀏覽器：遠端網頁回報的字串必須就是 App 組出的 Safari 相容 UA。
+fn verify_user_agent(app: &App) -> Result<()> {
+    ensure!(
+        app.user_agent.contains(" Version/") && app.user_agent.ends_with(" Safari/605.1.15"),
+        "User-Agent 缺少 Safari 識別：{}",
+        app.user_agent
+    );
+    let expected = app.user_agent.clone();
+    let proxy = app.proxy.clone();
+    active_view(app)?.evaluate_script_with_callback("navigator.userAgent", move |reported| {
+        let matches =
+            serde_json::from_str::<String>(&reported).is_ok_and(|agent| agent == expected);
+        let _ = proxy.send_event(Event::SmokeResult("user_agent", matches));
+    })?;
+    Ok(())
 }
 
 fn select_language(app: &App, language: &str) -> Result<()> {
@@ -420,7 +537,7 @@ fn verify_resize(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
     ensure!(app.window.is_resizable(), "原生視窗未啟用滑鼠縮放");
     let initial = app.frame;
     let target = app.screen.panel(
-        (initial.width + 80.0).min(900.0),
+        (initial.width + browser::CHROME_WIDTH).min(900.0),
         Some((initial.height - 120.0).max(MIN_HEIGHT)),
         8.0,
         app.settings.side,
@@ -442,8 +559,8 @@ fn verify_resize(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
     );
     let content = active_view(app)?.webview().frame().size;
     ensure!(
-        (content.width - target.width + 80.0).abs() < 1.0
-            && (content.height - target.height + 106.0).abs() < 1.0,
+        (content.width - target.width + browser::CHROME_WIDTH).abs() < 1.0
+            && (content.height - target.height + browser::CHROME_HEIGHT).abs() < 1.0,
         "遠端 WebView 尺寸未同步"
     );
 
@@ -521,6 +638,26 @@ fn verify_shortcut_update(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
     ensure!(app.visible != visible, "目前快捷鍵事件未切換面板");
     app.handle(Event::Command(Command::ShowSettings), flow)?;
     Ok(())
+}
+
+fn active_pad(app: &App) -> Result<&super::BrowserPad> {
+    app.settings
+        .active
+        .and_then(|id| app.pads.get(&id))
+        .context("smoke 網站不存在")
+}
+
+/// 連不上的網站：由輪詢推斷出失敗，且原生網頁視圖已讓位給控制面板的錯誤畫面。
+fn load_failed(app: &App) -> Result<bool> {
+    let pad = active_pad(app)?;
+    if pad.load.failure() != Some(LoadFailure::Unreachable) {
+        return Ok(false);
+    }
+    ensure!(
+        pad.view.webview().isHidden(),
+        "載入失敗後原生網頁視圖仍蓋住錯誤畫面"
+    );
+    Ok(true)
 }
 
 fn active_view(app: &App) -> Result<&WebView> {

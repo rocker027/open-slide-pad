@@ -14,6 +14,22 @@ pub const HIDE_DELAY: Duration = Duration::from_millis(650);
 pub const ANIMATION_TICK: Duration = Duration::from_millis(8);
 /// 輪詢游標位置與導覽狀態的間隔。
 pub const POLL_TICK: Duration = Duration::from_millis(32);
+/// 滑出動畫的長度與起點位移。
+pub const SLIDE_DURATION: Duration = Duration::from_millis(180);
+pub const SLIDE_DISTANCE: f64 = 44.0;
+
+/// 滑出動畫在 `progress`（0 收合、1 完全開啟）時的水平位移與不透明度。
+/// 系統開啟「減少動態效果」時只淡入淡出、不位移。
+pub fn slide(progress: f64, side: Side, reduce_motion: bool) -> (f64, f64) {
+    let eased = 1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3);
+    let direction = if side == Side::Right { 1.0 } else { -1.0 };
+    let offset = if reduce_motion {
+        0.0
+    } else {
+        (1.0 - eased) * SLIDE_DISTANCE * direction
+    };
+    (offset, eased)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Frame {
@@ -209,6 +225,25 @@ mod tests {
             Some(ANIMATION_TICK)
         );
         assert!(ANIMATION_TICK < POLL_TICK);
+    }
+
+    #[test]
+    fn slide_moves_in_from_its_side_and_only_fades_when_motion_is_reduced() {
+        assert_eq!(slide(0.0, Side::Right, false), (SLIDE_DISTANCE, 0.0));
+        assert_eq!(slide(0.0, Side::Left, false), (-SLIDE_DISTANCE, 0.0));
+        for side in [Side::Left, Side::Right] {
+            assert_eq!(slide(1.0, side, false), (0.0, 1.0));
+            // 減少動態效果：全程不位移，仍由淡入淡出表示開合。
+            for progress in [0.0, 0.3, 1.0] {
+                assert_eq!(slide(progress, side, true).0, 0.0);
+            }
+            assert_eq!(slide(0.0, side, true).1, 0.0);
+            assert_eq!(slide(1.0, side, true).1, 1.0);
+        }
+        let (offset, alpha) = slide(0.5, Side::Right, false);
+        assert!(offset > 0.0 && offset < SLIDE_DISTANCE && alpha > 0.5 && alpha < 1.0);
+        // 超出範圍的進度不可把面板推過終點。
+        assert_eq!(slide(1.7, Side::Right, false), (0.0, 1.0));
     }
 
     #[test]
