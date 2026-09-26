@@ -170,5 +170,19 @@
   "備份並重設": "Back Up and Reset",
   "備份檔名已存在": "A backup with the same name already exists",
   "無法備份設定檔": "Could not back up the settings file",
-  "已切換網站，但無法保存選取狀態：{error}": "Switched sites, but the selection could not be saved: {error}"
+  "已切換網站，但無法保存選取狀態：{error}": "Switched sites, but the selection could not be saved: {error}",
+  "從 Chrome 匯入書籤": "Import Chrome bookmarks",
+  "找不到 Chrome 書籤。只會讀取 Google Chrome 各個設定檔的書籤，不含其他瀏覽器。": "No Chrome bookmarks found. Only Google Chrome profiles are read; other browsers are not supported.",
+  "篩選書籤": "Filter bookmarks",
+  "輸入名稱或網址": "Type a name or URL",
+  "加入所選": "Add selected",
+  "已加入": "Added",
+  "已選 {count} · 還可加入 {remaining}": "{count} selected · {remaining} more can be added",
+  "側欄已滿，請先移除網站再匯入。": "The sidebar is full. Remove a site before importing.",
+  "所選網站都已在側欄": "All selected sites are already in the sidebar",
+  "候選清單已過期，請重新開啟匯入畫面": "The bookmark list is out of date. Open the import screen again",
+  "無法讀取 Chrome 書籤：{path}": "Could not read Chrome bookmarks: {path}",
+  "無法列出 Chrome 使用者資料目錄": "Could not list the Chrome user data folder",
+  "檔案超過 {size} MiB": "The file is larger than {size} MiB",
+  "書籤檔不是有效的 JSON": "The bookmark file is not valid JSON"
 }

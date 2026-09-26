@@ -166,6 +166,11 @@ input[type=range] { accent-color: var(--accent); margin: 10px 0 18px; }
 .width-label { display: flex; justify-content: space-between; }
 .width-label output { font-variant-numeric: tabular-nums; }
 .site-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.import-row { cursor: pointer; }
+.import-row input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.import-row:has(input:disabled) { color: var(--muted); cursor: default; }
+.import-list { margin-top: 12px; border-top: 1px solid var(--line); }
+.empty-state .pill { margin-top: 14px; }
 .site-info { flex: 1; min-width: 0; }
 .site-info strong, .site-info small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .site-info strong { font-size: 12px; font-weight: 500; }

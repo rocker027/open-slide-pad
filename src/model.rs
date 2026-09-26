@@ -1,4 +1,4 @@
-use crate::{i18n::Language, shortcut::Shortcut};
+use crate::{bookmarks::Bookmark, i18n::Language, shortcut::Shortcut};
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -309,6 +309,36 @@ impl Settings {
         let mut updated = self.clone();
         let pad = updated.pads.remove(index);
         updated.pads.insert(position, pad);
+        Ok(updated)
+    }
+
+    /// 一次加入多個書籤；已在側欄的網址略過。原本沒有網站時選取第一個新網站，否則選取不變。
+    pub fn import(&self, bookmarks: &[Bookmark]) -> Result<Self> {
+        let mut seen: HashSet<&str> = self.pads.iter().map(|pad| pad.url.as_str()).collect();
+        // 同一批裡的重複網址也只加一次；validate 只查識別碼唯一，不查網址。
+        let fresh: Vec<&Bookmark> = bookmarks
+            .iter()
+            .filter(|bookmark| seen.insert(bookmark.url.as_str()))
+            .collect();
+        ensure!(!fresh.is_empty(), "所選網站都已在側欄");
+        ensure!(
+            self.pads.len() + fresh.len() <= MAX_PADS,
+            "最多保留 {MAX_PADS} 個網站"
+        );
+        let mut updated = self.clone();
+        for bookmark in fresh {
+            let id = updated.next_id;
+            updated.next_id = id
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("識別碼已用盡"))?;
+            updated.pads.push(Pad {
+                id,
+                title: bookmark.title.clone(),
+                url: bookmark.url.clone(),
+            });
+            updated.active.get_or_insert(id);
+        }
+        updated.validate()?;
         Ok(updated)
     }
 
@@ -901,5 +931,74 @@ mod tests {
         settings.pads.pop();
         settings.width = f64::NAN;
         assert!(settings.validate().is_err());
+    }
+
+    fn bookmark(title: &str, url: &str) -> Bookmark {
+        Bookmark {
+            title: title.to_owned(),
+            url: url.to_owned(),
+        }
+    }
+
+    #[test]
+    fn import_appends_new_bookmarks_skips_existing_urls_and_keeps_the_selection() {
+        let settings = Settings::default().add("a.com").unwrap();
+        let imported = settings
+            .import(&[
+                bookmark("A again", "https://a.com/"),
+                bookmark("B", "https://b.com/"),
+                bookmark("C", "https://c.com/x"),
+                bookmark("C twice", "https://c.com/x"),
+            ])
+            .unwrap();
+        imported.validate().unwrap();
+        let urls: Vec<_> = imported.pads.iter().map(|pad| pad.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://a.com/", "https://b.com/", "https://c.com/x"]
+        );
+        let ids: Vec<_> = imported.pads.iter().map(|pad| pad.id).collect();
+        assert_eq!(ids, [1, 2, 3]);
+        assert_eq!(imported.pads[2].title, "C");
+        assert_eq!(imported.next_id, 4);
+        assert_eq!(imported.active, Some(1), "原本已有選取時不改變");
+        assert_eq!(settings.pads.len(), 1, "原設定不可被改動");
+        let from_empty = Settings::default()
+            .import(&[bookmark("B", "https://b.com/")])
+            .unwrap();
+        from_empty.validate().unwrap();
+        assert_eq!(from_empty.active, Some(1), "原本沒有網站時選取第一個新網站");
+    }
+
+    #[test]
+    fn import_enforces_the_pad_limit_and_rejects_selections_with_nothing_new() {
+        let mut settings = Settings::default();
+        for index in 0..18 {
+            settings = settings.add(&format!("site{index}.com")).unwrap();
+        }
+        let two = [
+            bookmark("Y", "https://y.com/"),
+            bookmark("Z", "https://z.com/"),
+        ];
+        let full = settings.import(&two).unwrap();
+        assert_eq!(full.pads.len(), MAX_PADS);
+        full.validate().unwrap();
+        assert!(full.import(&[bookmark("W", "https://w.com/")]).is_err());
+        let nineteen = settings.add("site18.com").unwrap();
+        assert!(
+            nineteen.import(&two).is_err(),
+            "超過上限時整批拒絕，不部分寫入"
+        );
+        assert!(
+            full.import(&two).is_err(),
+            "所選都已存在時回報錯誤，不視為成功"
+        );
+        assert!(settings.import(&[]).is_err());
+        // 書籤模組保證網址已通過 web_url；這裡再驗一次，避免其他呼叫端塞進壞資料。
+        assert!(
+            settings
+                .import(&[bookmark("bad", "javascript:alert(1)")])
+                .is_err()
+        );
     }
 }

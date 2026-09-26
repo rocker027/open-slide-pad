@@ -34,6 +34,10 @@ pub enum Command {
         position: usize,
     },
     UndoRemove,
+    ShowImport,
+    Import {
+        indices: Vec<usize>,
+    },
     FocusAddress,
     NewPad,
     ShowSettings,

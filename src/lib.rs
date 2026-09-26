@@ -1,3 +1,4 @@
+pub mod bookmarks;
 pub mod i18n;
 pub mod load;
 pub mod model;

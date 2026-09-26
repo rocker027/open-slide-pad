@@ -1,3 +1,4 @@
+mod bookmark_import;
 mod browser;
 mod chrome;
 mod menus;
@@ -14,6 +15,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use pad::BrowserPad;
 use serde_json::json;
 use sliderust::{
+    bookmarks::Bookmark,
     load::{LoadFailure, LoadWatch},
     model::{Pad, Settings, Side, normalize_address, web_url},
     panel::{Activity, AutoHide, EdgeTrigger, Frame, OpenedBy, POLL_TICK, SLIDE_DURATION, slide},
@@ -55,6 +57,9 @@ struct App {
     window: Window,
     settings: Settings,
     store: SettingsStore,
+    /// smoke 專用的 Chrome 根目錄；None 表示按下匯入時才解析真實目錄。
+    chrome_root: Option<PathBuf>,
+    import_candidates: Vec<Bookmark>,
     proxy: EventLoopProxy<Event>,
     frame: Frame,
     screen: Frame,
@@ -99,6 +104,8 @@ pub fn run() -> Result<()> {
             .to_owned(),
     );
     let store = SettingsStore::open(&root)?;
+    // smoke 不能碰真正的 Chrome 資料，書籤 fixture 放在獨立資料目錄底下。
+    let chrome_root = smoke.then(|| root.join("chrome"));
     let mut event_loop = EventLoopBuilder::<Event>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     // tao 必須是第一個建立 NSApplication 的人，否則之後拿到的不是它的子類。
@@ -119,6 +126,7 @@ pub fn run() -> Result<()> {
                 target,
                 proxy.clone(),
                 initial_store.take().expect("僅初始化一次"),
+                chrome_root.clone(),
                 smoke,
                 settings.clone(),
             ) {
@@ -170,6 +178,7 @@ impl App {
         target: &tao::event_loop::EventLoopWindowTarget<Event>,
         proxy: EventLoopProxy<Event>,
         store: SettingsStore,
+        chrome_root: Option<PathBuf>,
         smoke: bool,
         settings: Settings,
     ) -> Result<Self> {
@@ -202,6 +211,8 @@ impl App {
             home: settings.pads.is_empty(),
             settings,
             store,
+            chrome_root,
+            import_candidates: Vec::new(),
             proxy,
             frame: Frame::default(),
             screen: Frame::default(),
@@ -498,6 +509,8 @@ impl App {
             }
             Command::Move { id, position } => self.commit(self.settings.move_pad(id, position)?)?,
             Command::UndoRemove => self.undo_remove()?,
+            Command::ShowImport => self.show_import()?,
+            Command::Import { indices } => self.import(&indices)?,
             Command::FocusAddress => self.focus_chrome("window.focusAddress()", false)?,
             Command::NewPad => self.focus_chrome("window.showAddForm()", true)?,
             Command::ShowSettings => self.focus_chrome("window.showSettings()", true)?,
@@ -522,7 +535,13 @@ impl App {
                 pinned: !self.settings.pinned,
                 ..self.settings.clone()
             })?,
-            Command::Overlay { open } => self.overlay = open,
+            Command::Overlay { open } => {
+                self.overlay = open;
+                // 關閉挑選畫面就丟掉候選；沒有畫面可送索引，留著只是延長過期資料的壽命。
+                if !open {
+                    self.import_candidates.clear();
+                }
+            }
             Command::Side => {
                 let side = if self.settings.side == Side::Right {
                     Side::Left

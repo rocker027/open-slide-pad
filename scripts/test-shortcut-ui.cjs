@@ -18,7 +18,7 @@ class Element {
   focus() { ctx.document.activeElement=this; } select() {}
   blur() { if(ctx.document.activeElement===this) ctx.document.activeElement=null; }
 }
-for(const id of ['pads','home','home-button','site-count','saved-sites','empty-state','suggestions','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','toast-text','toast-close','resize-grip','app-version','reload','progress','progress-bar','load-error','load-error-title','load-error-detail','load-error-address','load-dismiss']) {
+for(const id of ['pads','home','home-button','site-count','saved-sites','empty-state','suggestions','pin','back','forward','address','status','status-text','undo-remove','status-shortcut','home-shortcut','hero-add','add','settings','address-form','quick','overlay','toast','toast-text','toast-close','resize-grip','app-version','reload','progress','progress-bar','load-error','load-error-title','load-error-detail','load-error-address','load-dismiss','empty-import']) {
  const e=new Element('div'); e.id=id; e.append(new Element('#text'));
 }
 const sent=[];
@@ -228,3 +228,42 @@ assert.ok(find(ids.get('quick'),'Email'));
 assert.equal(ids.get('saved-sites').children[0].attributes['aria-label'],'Open 工作筆記');
 assert.equal(ids.get('saved-sites').children[0].children[1].children[0].textContent,'工作筆記');
 console.log('PASS bilingual settings, IPC, save acknowledgement, focus, catalogs and user text');
+
+// 匯入書籤：入口送 show_import；挑選畫面只送索引、尊重上限、已加入者停用、篩選只藏不刪。
+ids.get('empty-import').onclick();
+assert.deepEqual(sent.at(-1),{action:'show_import'});
+ids.get('import-bookmarks').onclick();
+assert.deepEqual(sent.at(-1),{action:'show_import'});
+ctx.window.showImport({entries:[],remaining:18});
+assert.ok(ids.get('import-empty'),'沒有書籤時顯示空狀態');
+assert.equal(ids.get('overlay-title').textContent,'Import Chrome bookmarks');
+const entries=[{title:'Docs',url:'https://docs.example.com/a',added:false},{title:'工作筆記',url:'https://www.notion.so/team',added:true},{title:'<b>x</b>',url:'https://x.example.com/',added:false},{title:'Mail',url:'https://mail.example.com/',added:false}];
+ctx.window.showImport({entries,remaining:2});
+const boxes=ids.get('import-list').children.map(row=>row.children[0]);
+assert.equal(boxes.length,4);
+assert.equal(boxes[1].disabled,true,'已加入的書籤不可再勾');
+assert.equal(ids.get('import-list').children[1].children[2].textContent,'Added');
+assert.equal(ids.get('import-list').children[2].children[1].children[0].textContent,'<b>x</b>','名稱以文字節點呈現');
+assert.equal(ids.get('import-list').children[0].children[1].children[1].textContent,'docs.example.com');
+assert.equal(ids.get('import-submit').disabled,true,'未勾選時不可送出');
+assert.equal(ids.get('import-count').textContent,'0 selected · 2 more can be added');
+boxes[3].checked=true; boxes[3].onchange();
+boxes[0].checked=true; boxes[0].onchange();
+assert.equal(ids.get('import-count').textContent,'2 selected · 0 more can be added');
+assert.equal(boxes[2].disabled,true,'到達上限後其餘項目停用');
+assert.equal(boxes[0].disabled,false,'已勾選的項目仍可取消');
+ids.get('import-filter').value='MAIL';
+ids.get('import-filter').oninput();
+assert.deepEqual(ids.get('import-list').children.map(row=>row.hidden),[true,true,true,false],'篩選不分大小寫、比對名稱與網址');
+ids.get('import-filter').value='notion.so';
+ids.get('import-filter').oninput();
+assert.deepEqual(ids.get('import-list').children.map(row=>row.hidden),[true,false,true,true]);
+ids.get('import-form').onsubmit({preventDefault(){}});
+assert.deepEqual(sent.at(-1),{action:'import',indices:[0,3]},'只送索引，且藏起來的勾選仍算數');
+boxes[0].checked=false; boxes[0].onchange();
+assert.equal(boxes[2].disabled,false,'取消勾選後釋出名額');
+ctx.window.showImport({entries,remaining:0});
+assert.equal(ids.get('import-count').textContent,'The sidebar is full. Remove a site before importing.');
+assert.ok(ids.get('import-list').children.every(row=>row.children[0].disabled),'側欄已滿時全部停用');
+assert.equal(ids.get('import-submit').disabled,true);
+console.log('PASS bookmark import picker sends indices, enforces the limit and filters by name or URL');

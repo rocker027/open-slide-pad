@@ -83,3 +83,23 @@
 解析後仍是一般 http(s) 網址的寫法（大寫 scheme、空的 userinfo、同形字網域）視為合法；同形字網域在網址列以 punycode 顯示。
 
 矩陣經獨立探測者三輪實跑後補列並重整；最後一輪對定版規則跑了 536 個手工輸入與約 76 萬個相異 fuzz 輸入（含與重構前邏輯的差分比對），零反例。探測程式未收進 repo。「備份並重設」對話框的按鈕行為未經自動化驗證（執行環境沒有輔助使用權限）；已實測對話框會以 modal 層級顯示在前景，第一個（預設）按鈕是結束。
+
+## Chrome 書籤匯入（0.4.3 之後）
+
+書籤檔由 Chrome 寫出，App 只讀不寫；內容視為不可信輸入，先於實作建立矩陣並先 RED。
+
+| 嘗試／故障 | 預期 | 驗證 |
+| --- | --- | --- |
+| 書籤網址為 `javascript:`、`file:`、`chrome:`、`data:`、`mailto:`、`ftp:`、`blob:`、含帳密、無主機、頭尾空白、控制字元 | 不出現在候選；只有通過 `web_url` 的 http(s) 進入 | bookmarks 攻擊面矩陣測試＋原生 smoke（fixture 含 `javascript:`） |
+| 名稱含控制字元、頭尾空白、超過 80 字、空字串 | 去除控制字元與空白、截到 80 字、空名稱改用主機名 | bookmarks 測試 |
+| `roots` 不是物件、`children` 不是陣列、`name`／`url` 型別錯誤、缺 `type`、資料夾缺 `children`、根本沒有 `roots` | 跳過該節點，不中止、不 panic | 形態矩陣測試 |
+| JSON 壞掉、空檔、巢狀超過 128 層、檔案超過 16 MiB | 整份拒絕並提示，不部分讀取 | bookmarks 負向測試 |
+| 錯誤訊息 | 只含檔案路徑與原因，不含書籤名稱或網址 | 「訊息不含內容」測試 |
+| 同一網址出現在多個檔案或 profile、`https://a.com` 與 `https://a.com/` | 以正規化網址去重，保留首次順序 | collect 測試 |
+| 根目錄本身的 `Bookmarks`、非目錄項目、沒有書籤檔的 profile | 忽略 | collect 測試 |
+| 控制面板回傳越界或重複的索引 | 越界回報候選過期，整批拒絕；重複去重後依書籤順序加入 | `bookmarks::select` 單元測試 |
+| 網址百分比編碼後超過 8192 位元組（輸入剛好 8192 且含中段空白或非 ASCII） | 不進候選；候選一律以實際保存的字串再過一次 `web_url`，`Settings::import` 的 validate 不會整批擋下 | bookmarks 測試（8192 含空白、8115 CJK 兩個輸入都先通過 `web_url`，序列化後被擋） |
+| 同一批選取含重複網址 | 只加一次 | `Settings::import` 測試 |
+| 關閉挑選畫面、找不到使用者目錄 | 候選清空；只讓匯入失敗，不影響 App 啟動 | bookmark_import／desktop source trace |
+| 匯入後超過 20 個、所選都已在側欄 | 整批拒絕，不部分寫入；記憶體與磁碟不變 | `Settings::import` 測試 |
+| 候選標題／網址進入控制面板 | JSON 序列化後只以 textContent 呈現 | Node DOM regression（`<b>x</b>` 名稱） |

@@ -37,6 +37,9 @@ enum Stage {
     LoadDismiss,
     LoadDismissRetried,
     LoadDismissed,
+    ImportShown,
+    ImportShownResult,
+    Imported,
     Done,
 }
 
@@ -53,6 +56,7 @@ pub struct Probe {
     frames_result: Option<bool>,
     user_agent_result: Option<bool>,
     load_failure_result: Option<bool>,
+    import_result: Option<bool>,
     frames_started: Option<Instant>,
     frames_polled: Option<Instant>,
     frames_loaded: Option<Instant>,
@@ -61,6 +65,8 @@ pub struct Probe {
 
 // 本機沒有服務監聽的埠：連線立刻被拒，用來重現「載入失敗」。
 const UNREACHABLE: &str = "http://127.0.0.1:1/";
+// fixture 裡唯一會被勾選匯入的書籤；匯入只寫設定，不載入，所以不需要真的連上。
+const IMPORTED: &str = "https://www.iana.org/domains/reserved";
 
 // 三個 iframe 各自向上層回報載入：srcdoc 與 blob 應放行，data: 應被導覽規則擋下。
 const EMBED_FRAMES: &str = r#"(() => {
@@ -84,6 +90,7 @@ impl Probe {
             "language" => self.language_result = Some(passed),
             "user_agent" => self.user_agent_result = Some(passed),
             "load_failure" => self.load_failure_result = Some(passed),
+            "import" => self.import_result = Some(passed),
             // 一旦看過 data: 文件載入就維持失敗，不被之後的回報蓋掉。
             "frames" => self.frames_result = Some(passed && self.frames_result != Some(false)),
             _ => {}
@@ -363,8 +370,44 @@ impl Probe {
                             .is_some_and(|url| url.starts_with("https://example.com/")),
                     "「回到原本的頁面」後未回到原頁面"
                 );
+                write_bookmark_fixture(app)?;
+                app.handle(Event::Command(Command::ShowImport), flow)?;
+                self.stage = Stage::ImportShown;
+            }
+            Stage::ImportShown if app.overlay => {
+                // 候選只該有三個：127.0.0.1:1（此時兩個分頁都停在這個網址，視為已加入而停用）、iana、rfc-editor；
+                // javascript: 與重複的都不該出現。
+                inspect(
+                    app,
+                    "import",
+                    "(() => { const boxes = [...document.querySelectorAll('#import-list input')]; return boxes.length === 3 && boxes[0].disabled && !boxes[1].disabled && !boxes[2].disabled && document.getElementById('import-submit').disabled; })()",
+                )?;
+                self.stage = Stage::ImportShownResult;
+            }
+            Stage::ImportShownResult => {
+                if let Some(passed) = self.import_result {
+                    ensure!(passed, "匯入畫面的候選清單與 fixture 不符");
+                    ensure!(app.import_candidates.len() == 3, "Rust 端候選數量不符");
+                    // 走真正的核取方塊與表單提交，驗證控制面板送回索引的契約。
+                    app.chrome.evaluate_script("(() => { const box = document.querySelectorAll('#import-list input')[1]; box.checked = true; box.dispatchEvent(new Event('change')); document.getElementById('import-form').requestSubmit(); })()")?;
+                    self.stage = Stage::Imported;
+                }
+            }
+            Stage::Imported if app.settings.pads.iter().any(|pad| pad.url == IMPORTED) => {
+                let saved = app.store.load()?;
+                ensure!(
+                    saved
+                        .pads
+                        .last()
+                        .is_some_and(|pad| pad.url == IMPORTED && pad.title == "IANA"),
+                    "匯入的網站未寫入設定檔"
+                );
+                ensure!(
+                    app.home && !app.overlay && app.import_candidates.is_empty(),
+                    "匯入後應回到首頁並清空候選"
+                );
                 eprintln!(
-                    "SMOKE chrome_ready=true remote_page_loaded=true user_agent=true embedded_frames=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true english_default=true language_ipc=true language_persistence=true language_rollback=true language_menus=true language_preserves_sites=true select_policy=true load_failure_screen=true load_retry=true load_dismiss=true"
+                    "SMOKE chrome_ready=true remote_page_loaded=true user_agent=true embedded_frames=true spa_navigation=true native_menu_address=true native_menu_new_pad=true native_menu_hide=true shortcut_form=true native_shortcut_update=true shortcut_persistence=true shortcut_event_filter=true shortcut_labels=true native_resize=true webview_layout=true resize_persistence=true resize_rollback=true resize_grip=true english_default=true language_ipc=true language_persistence=true language_rollback=true language_menus=true language_preserves_sites=true select_policy=true load_failure_screen=true load_retry=true load_dismiss=true bookmark_import=true"
                 );
                 self.stage = Stage::Done;
                 *flow = ControlFlow::Exit;
@@ -637,6 +680,37 @@ fn verify_shortcut_update(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
     app.handle(Event::Shortcut(next_id), flow)?;
     ensure!(app.visible != visible, "目前快捷鍵事件未切換面板");
     app.handle(Event::Command(Command::ShowSettings), flow)?;
+    Ok(())
+}
+
+/// 兩個 profile、兩種檔名，混入已加入的、危險的與重複的書籤，驗證過濾與去重走的是真實檔案路徑。
+fn write_bookmark_fixture(app: &App) -> Result<()> {
+    let node = |name: &str, url: &str| serde_json::json!({"type": "url", "name": name, "url": url, "id": "1", "guid": "g"});
+    let document = |children: Vec<serde_json::Value>| {
+        serde_json::json!({"roots": {"bookmark_bar": {"type": "folder", "children": children}}})
+            .to_string()
+    };
+    let root = app
+        .chrome_root
+        .as_ref()
+        .context("smoke 未設定 Chrome 根目錄")?;
+    let default = root.join("Default");
+    let profile = root.join("Profile 1");
+    std::fs::create_dir_all(&default)?;
+    std::fs::create_dir_all(&profile)?;
+    std::fs::write(
+        default.join("Bookmarks"),
+        document(vec![
+            node("Unreachable", UNREACHABLE),
+            node("Script", "javascript:alert(1)"),
+            node("IANA", IMPORTED),
+            node("IANA again", IMPORTED),
+        ]),
+    )?;
+    std::fs::write(
+        profile.join("AccountBookmarks"),
+        document(vec![node("RFC", "https://www.rfc-editor.org/")]),
+    )?;
     Ok(())
 }
 

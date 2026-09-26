@@ -120,6 +120,74 @@ window.showSettings = () => {
   const element = overlay(t('設定'), 'settings');
   renderSettings(element);
 };
+function importRow(entry, index) {
+  const row = text('label', '', 'site-row import-row');
+  const box = document.createElement('input');
+  Object.assign(box, {type:'checkbox', value:String(index), disabled:entry.added});
+  const copy = text('div', '', 'site-info');
+  copy.append(text('strong', entry.title), text('small', siteDomain(entry.url)));
+  row.append(box, copy);
+  if (entry.added) row.append(text('span', t('已加入'), 'site-key'));
+  return {row, box};
+}
+function selectedIndices(rows) {
+  return rows.filter(({box}) => box.checked && !box.disabled).map(({box}) => Number(box.value));
+}
+// 到達上限後，其餘未勾選的項目不可再勾；已加入的項目一直停用。
+function bindImportLimit(rows, entries, remaining, counter, submit) {
+  const refresh = () => {
+    const count = selectedIndices(rows).length;
+    counter.textContent = remaining
+      ? t('已選 {count} · 還可加入 {remaining}', {count, remaining:remaining - count})
+      : t('側欄已滿，請先移除網站再匯入。');
+    rows.forEach(({box}, index) => { if (!entries[index].added) box.disabled = !box.checked && count >= remaining; });
+    submit.disabled = count === 0;
+  };
+  rows.forEach(({box}) => { box.onchange = refresh; });
+  refresh();
+}
+// 篩選只隱藏列，藏起來的勾選仍算數。
+function bindImportFilter(input, rows, entries) {
+  input.oninput = () => {
+    const needle = input.value.trim().toLowerCase();
+    rows.forEach(({row}, index) => {
+      row.hidden = Boolean(needle) && !entries[index].title.toLowerCase().includes(needle) && !entries[index].url.toLowerCase().includes(needle);
+    });
+  };
+}
+// 候選清單由 Rust 一次推送，不進 render 的狀態；送回的只有索引，避免超過 IPC 訊息上限。
+window.showImport = ({entries, remaining}) => {
+  const element = overlay(t('從 Chrome 匯入書籤'), 'import');
+  const back = button(t('← 返回設定'), window.showSettings, 'text-button');
+  if (!entries.length) {
+    const empty = text('p', t('找不到 Chrome 書籤。只會讀取 Google Chrome 各個設定檔的書籤，不含其他瀏覽器。'), 'hint');
+    empty.id = 'import-empty';
+    element.append(empty, back);
+    return;
+  }
+  const form = document.createElement('form');
+  form.id = 'import-form';
+  const {fieldLabel, input} = inputField('import-filter', t('篩選書籤'));
+  Object.assign(input, {required:false, type:'search', placeholder:t('輸入名稱或網址')});
+  const counter = text('p', '', 'hint');
+  counter.id = 'import-count';
+  counter.setAttribute('aria-live', 'polite');
+  const list = text('div', '', 'import-list');
+  list.id = 'import-list';
+  const rows = entries.map(importRow);
+  rows.forEach(({row}) => list.append(row));
+  const actions = submitRow(t('加入所選'));
+  actions.lastChild.id = 'import-submit';
+  bindImportLimit(rows, entries, remaining, counter, actions.lastChild);
+  bindImportFilter(input, rows, entries);
+  form.onsubmit = event => {
+    event.preventDefault();
+    send('import', {indices:selectedIndices(rows)});
+  };
+  form.append(fieldLabel, input, counter, list, actions);
+  element.append(form, back);
+  input.focus();
+};
 function row(title, description, control) {
   const element = text('div', '', 'setting-row');
   const copy = text('div', '');
@@ -296,6 +364,9 @@ function renderSettings(element) {
   settings.pads.forEach((pad, index) => element.append(padRow(pad, index, settings.pads.length)));
   if (!settings.pads.length) element.append(text('p', t('尚未加入網站，按左側 ＋ 開始。'), 'hint'));
   element.append(text('p', t('用箭頭調整順序，按編輯重新命名。移除後可在下方復原最近一個捷徑；登入資料不受影響。'), 'hint'));
+  const importButton = button(t('從 Chrome 匯入書籤'), () => send('show_import'), 'pill');
+  importButton.id = 'import-bookmarks';
+  element.append(importButton);
   element.append(text('h3', t('其他快捷鍵'), 'section-title'));
   const shortcuts = text('div', '', 'shortcut-list');
   [[t('選取網址'),'⌘ L'],[t('新增網站'),'⌘ T'],[t('重新整理'),'⌘ R'],[t('上一頁／下一頁'),'⌘ [ / ⌘ ]'],[t('切換網站'),'⌘ 1–9'],[t('收合側欄'),'⌘ W'],[t('開啟設定'),'⌘ ,']].forEach(([name, keys]) => {
@@ -417,6 +488,7 @@ document.querySelectorAll('[data-action]').forEach(element => {
   element.onclick = () => send(element.dataset.action);
 });
 $('add').onclick = $('hero-add').onclick = () => send('new_pad');
+$('empty-import').onclick = () => send('show_import');
 $('settings').onclick = () => send('show_settings');
 $('toast-close').onclick = hideToast;
 // 滑鼠停在提示上時不倒數，避免訊息還沒讀完就消失。
