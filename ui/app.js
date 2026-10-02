@@ -346,6 +346,21 @@ function renderSettings(element) {
   appearance.append(row(t('固定顯示'), t('游標移開時仍保留側欄'),
     toggle(t('固定顯示'), settings.pinned, 'pin')));
   element.append(appearance);
+  const sleepSelect = document.createElement('select');
+  sleepSelect.id = 'sleep-select';
+  sleepSelect.setAttribute('aria-label', t('背景分頁休眠'));
+  [0,5,15,30,60,120].forEach(minutes => {
+    const option = text('option', minutes ? t('{minutes} 分鐘', {minutes}) : t('停用'));
+    option.value = String(minutes);
+    sleepSelect.append(option);
+  });
+  sleepSelect.value = String(settings.sleep_after_minutes ?? 15);
+  sleepSelect.onchange = () => {
+    const minutes = Number(sleepSelect.value);
+    sleepSelect.value = String(snapshot.settings.sleep_after_minutes ?? 15);
+    send('set_sleep', {minutes});
+  };
+  element.append(row(t('背景分頁休眠'), t('閒置後釋放記憶體；目前分頁保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。'), sleepSelect));
   const widthLabel = text('label', t('側欄寬度'), 'field width-label');
   widthLabel.htmlFor = 'sidebar-width';
   const widthValue = text('output', `${settings.width} pt`);
@@ -406,10 +421,15 @@ function renderPads(state) {
   state.settings.pads.forEach((pad, index) => {
     const initial = padInitial(pad);
     const selected = !state.home && state.settings.active === pad.id;
-    const element = button(initial, () => send('select', {id:pad.id}), `pad${selected ? ' active' : ''}`);
-    element.title = pad.title + (index < 9 ? ` · ⌘${index + 1}` : '');
+    const sleeping = state.sleeping?.includes(pad.id);
+    const element = button(initial, () => send('select', {id:pad.id}), `pad${selected ? ' active' : ''}${sleeping ? ' sleeping' : ''}`);
+    element.title = pad.title + (sleeping ? ` · ${t('已休眠')}` : '') + (index < 9 ? ` · ⌘${index + 1}` : '');
     element.setAttribute('aria-label', pad.title);
     element.setAttribute('aria-pressed', String(selected));
+    element.oncontextmenu = event => {
+      event.preventDefault();
+      send('pad_menu', {id:pad.id});
+    };
     $('pads').append(element);
   });
 }
@@ -453,6 +473,7 @@ window.render = state => {
   }
   const settingsChanged = JSON.stringify(snapshot?.settings) !== JSON.stringify(state.settings);
   const homeChanged = snapshot?.home !== state.home;
+  const sleepingChanged = JSON.stringify(snapshot?.sleeping) !== JSON.stringify(state.sleeping);
   const shortcutChanged = snapshot?.shortcut_error !== state.shortcut_error || snapshot?.shortcut_active !== state.shortcut_active;
   if (!snapshot || Boolean(snapshot.settings.pads.length) !== Boolean(state.settings.pads.length)) {
     $('suggestions').open = state.settings.pads.length === 0;
@@ -460,7 +481,7 @@ window.render = state => {
   snapshot = state;
   const settings = state.settings;
   document.documentElement.dataset.side = settings.side;
-  if (settingsChanged || homeChanged) renderPads(state);
+  if (settingsChanged || homeChanged || sleepingChanged) renderPads(state);
   if (settingsChanged) renderHomePads(settings.pads);
   $('home').hidden = !state.home;
   $('home-button').setAttribute('aria-pressed', String(state.home));

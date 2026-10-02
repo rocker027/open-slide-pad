@@ -1,14 +1,35 @@
 use super::{Event, chrome::Command, status_icon};
 use anyhow::Result;
 use sliderust::i18n::Language;
-use tao::event_loop::EventLoopProxy;
+use tao::{event_loop::EventLoopProxy, platform::macos::WindowExtMacOS, window::Window};
 use tray_icon::{
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{
-        Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+        ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
         accelerator::{Accelerator, Code, Modifiers},
     },
 };
+
+pub fn show_pad_menu(window: &Window, id: u64, language: Language) -> Result<()> {
+    let close = MenuItem::with_id(
+        format!("close_pad_{id}"),
+        language.text("關閉分頁"),
+        true,
+        None,
+    );
+    let menu = Menu::with_items(&[&close])?;
+    // 主线程持有窗口与菜单，原生菜单会在鼠标位置显示并同步完成追踪。
+    unsafe { menu.show_context_menu_for_nsview(window.ns_view(), None) };
+    Ok(())
+}
+
+pub fn close_pad_command(menu_id: &str) -> Option<Command> {
+    menu_id
+        .strip_prefix("close_pad_")?
+        .parse::<u64>()
+        .ok()
+        .map(|id| Command::Remove { id })
+}
 
 #[derive(Default)]
 pub struct Labels {
@@ -165,15 +186,37 @@ pub fn build(proxy: EventLoopProxy<Event>, language: Language) -> Result<(TrayIc
             "forward" => Some(Event::Command(Command::Forward)),
             "reload" => Some(Event::Command(Command::Reload)),
             "stop" => Some(Event::Command(Command::Stop)),
-            id => id
-                .strip_prefix("select_pad_")
-                .and_then(|index| index.parse::<usize>().ok())
-                .filter(|index| *index < 9)
-                .map(|index| Event::Command(Command::SelectIndex { index })),
+            id => close_pad_command(id).map(Event::Command).or_else(|| {
+                id.strip_prefix("select_pad_")
+                    .and_then(|index| index.parse::<usize>().ok())
+                    .filter(|index| *index < 9)
+                    .map(|index| Event::Command(Command::SelectIndex { index }))
+            }),
         };
         if let Some(message) = message {
             let _ = proxy.send_event(message);
         }
     }));
     Ok((tray, app_menu, labels))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_menu_targets_the_clicked_pad_without_using_the_active_pad() {
+        assert!(matches!(
+            close_pad_command("close_pad_42"),
+            Some(Command::Remove { id: 42 })
+        ));
+        for id in [
+            "close_pad_",
+            "close_pad_invalid",
+            "select_pad_0",
+            "close_pad_18446744073709551616",
+        ] {
+            assert!(close_pad_command(id).is_none(), "{id}");
+        }
+    }
 }

@@ -2,7 +2,7 @@ use super::Event;
 use anyhow::Result;
 use objc2::rc::Retained;
 use objc2_web_kit::WKBackForwardListItem;
-use sliderust::model::{Pad, navigation_allowed, web_url};
+use sliderust::model::{navigation_allowed, web_url};
 use tao::{event_loop::EventLoopProxy, window::Window};
 use wry::{
     NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtDarwin,
@@ -19,6 +19,11 @@ pub const PAGE_GUTTER: f64 = 8.0;
 pub const CHROME_WIDTH: f64 = RAIL_WIDTH + PAGE_GUTTER * 2.0;
 pub const CHROME_HEIGHT: f64 = TOOLBAR_HEIGHT + STATUS_HEIGHT;
 
+pub struct Page<'a> {
+    pub address: Option<&'a str>,
+    pub view_id: u64,
+}
+
 pub fn bounds(width: f64, height: f64) -> Rect {
     Rect {
         position: LogicalPosition::new(RAIL_WIDTH + PAGE_GUTTER, TOOLBAR_HEIGHT).into(),
@@ -32,19 +37,18 @@ pub fn bounds(width: f64, height: f64) -> Rect {
 
 pub fn build(
     window: &Window,
-    pad: &Pad,
+    page: Page<'_>,
     proxy: EventLoopProxy<Event>,
     width: f64,
     height: f64,
     ephemeral: bool,
     user_agent: &str,
 ) -> Result<WebView> {
-    let id = pad.id;
+    let id = page.view_id;
     let loaded = proxy.clone();
     let popup = proxy.clone();
     let crashed = proxy.clone();
-    Ok(WebViewBuilder::new()
-        .with_url(&pad.url)
+    let mut builder = WebViewBuilder::new()
         .with_bounds(bounds(width, height))
         .with_incognito(ephemeral)
         .with_user_agent(user_agent)
@@ -70,8 +74,11 @@ pub fn build(
                 matches!(event, PageLoadEvent::Finished),
                 address,
             ));
-        })
-        .build_as_child(window)?)
+        });
+    if let Some(address) = page.address {
+        builder = builder.with_url(address);
+    }
+    Ok(builder.build_as_child(window)?)
 }
 
 /// 歷史中離目前最近的一個 http(s) 頁面。

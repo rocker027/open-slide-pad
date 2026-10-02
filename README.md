@@ -31,7 +31,9 @@ open "dist/Open Slide Pad.app"
 - 快捷鍵支援 A–Z、0–9、空白鍵、F1–F20，至少包含 ⌘、⌥、⌃ 之一。App／文字編輯的既有快捷鍵會保留；系統回報組合已占用時，保留原快捷鍵並顯示錯誤。若啟動時註冊失敗，可用選單列開啟設定再換一組；部分系統保留組合不一定會回報衝突，請避免使用 macOS 既有快捷鍵。
 - 首頁列出已加入的網站與網域，按任一列即可開啟；「加入常用服務」可展開快速新增建議。
 - **從 Chrome 匯入書籤**：首頁空狀態與「設定 → 管理網站」都有入口。App 讀取本機 Google Chrome 每個設定檔（Default、Profile N）的 `Bookmarks` 與 `AccountBookmarks`，列出所有 http／https 書籤；可用名稱或網址篩選、勾選後一次加入，已在側欄的會標示「已加入」，勾選數受 20 個上限限制。只讀取，不修改 Chrome 的任何檔案；不支援 Chrome Beta／Canary、Chromium、Arc、Brave、Edge、Safari 與匯出的 HTML 書籤檔，也不匯入資料夾結構。
-- **＋** 新增網站或搜尋；左側切換網站，各網站的 WebView 保持在記憶體中，初次選取才載入，最多 20 個。
+- **＋** 新增網站或搜尋；左側切換網站，初次選取才載入，最多 20 個。側欄分頁右鍵可選「關閉分頁」；網頁的 `target=_blank`／`window.open()` 會新增獨立分頁。
+- **Settings → Background tab sleep** 可設定背景分頁閒置時間：5／15／30／60／120 分鐘或停用，預設 15 分鐘。選取中的分頁保持運作，即使視窗收合也不休眠。休眠分頁會顯示標記，重新選取時重建 WebView；載入中、失敗或無快照的頁面會保留。
+- 休眠快照僅存於本次執行的記憶體，保留原生可恢復的網址、歷史與捲動位置，網站 cookies 不會清除。恢復會重新載入；未提交的表單／草稿、即時連線與其他執行中狀態可能無法保留。釋放 WebView 不代表立即釋放所有 WebKit 共用記憶體，未量測實際節省容量。
 - 網址列、上一頁、下一頁、重新整理及「在預設瀏覽器開啟」。載入時工具列下緣顯示進度，「重新整理」會變成「停止」（**⌘.**）。新開的網站或網址列輸入的網址連不上時，顯示錯誤畫面與「重試」，不會停在空白頁；原本的頁面還在時（例如在網址列打錯網址），另有「回到原本的頁面」；網頁的處理程序被系統終止時也一樣。網頁內點連結失敗、下載、被擋下的外部連結則維持原頁面，不顯示錯誤畫面。
 - 網址列可直接輸入 `localhost:3000`、`example.com:8080` 這類「主機:埠」；`localhost` 與 `127.0.0.1` 預設走 http，其餘走 https。以 `scheme://` 開頭的輸入視為網址，格式錯誤會顯示錯誤訊息；其餘含空白的輸入一律當成搜尋（例如 `site:github.com wry`、`how to parse https://example.com`）。單一名稱的內網主機（如 `nas:5000`、`myhost/index.html`）不會被當成網址，請自行加上 `http://`。編碼後超過 8192 位元組的網址或搜尋會被拒絕。
 - 設定可調整左右位置、360–960 pt 寬度、hot edge、釘選及移除網站。
@@ -62,6 +64,9 @@ Chrome 書籤只在按下「從 Chrome 匯入書籤」時讀取 `~/Library/Appli
 ./scripts/verify.sh
 # 另跑原生 smoke：需要視窗伺服器與網路，使用獨立暫存目錄與無痕 WebKit，最長約 25 秒
 ./scripts/verify.sh --smoke
+# 休眠原生整合：本機 HTTP fixture，不使用外部網站或使用者資料
+TASK_SLEEP_DIR=$(mktemp -d)
+cargo run --locked -- --sleep-smoke-test --data-dir "$TASK_SLEEP_DIR"
 ```
 
 CI 固定使用 Rust 1.98.1：clippy 每版都會新增 lint，浮動版本會讓未改動的程式碼突然變紅；升級時請同步修改 `.github/workflows/ci.yml`。
@@ -72,6 +77,6 @@ smoke 驗證原生視窗、本機控制 IPC、example.com 載入、遠端網頁�
 
 ## 目前邊界
 
-尚無 iCloud、Safari 擴充、MCP、多帳號 profile、下載管理、通知、登入時啟動及自動更新。`target=_blank`／新視窗要求會在原網站分頁開啟；需要 popup opener 的 OAuth 流程可能不相容，請使用「在預設瀏覽器開啟」。攝影機／麥克風流程未支援。所有網站的登入相容性、全螢幕 Spaces、實體多螢幕與 Intel 機器尚未全面驗證。
+尚無 iCloud、Chrome／Safari 擴充套件、MCP、多帳號 profile、下載管理、通知、登入時啟動及自動更新。新分頁目前只接收初始網址，沒有維持 popup opener／跨視窗通訊，因此部分 OAuth 流程可能不相容，請使用「在預設瀏覽器開啟」。攝影機／麥克風流程未支援。所有網站的登入相容性、全螢幕 Spaces、實體多螢幕與 Intel 機器尚未全面驗證。
 
 研究、取捨與來源見 [docs/research.md](docs/research.md)，負向驗收見 [docs/security-tests.md](docs/security-tests.md)。

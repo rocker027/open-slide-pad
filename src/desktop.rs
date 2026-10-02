@@ -6,6 +6,8 @@ mod native;
 mod pad;
 mod resize;
 mod shortcuts;
+mod sleep;
+mod sleep_smoke;
 mod smoke;
 mod status_icon;
 
@@ -16,7 +18,7 @@ use pad::BrowserPad;
 use serde_json::json;
 use sliderust::{
     bookmarks::Bookmark,
-    load::{LoadFailure, LoadWatch},
+    load::LoadFailure,
     model::{Pad, Settings, Side, normalize_address, web_url},
     panel::{Activity, AutoHide, EdgeTrigger, Frame, OpenedBy, POLL_TICK, SLIDE_DURATION, slide},
     shortcut::ShortcutBinding,
@@ -54,6 +56,8 @@ struct App {
     // WebViews 必須比宿主 Window 更早釋放。
     chrome: WebView,
     pads: HashMap<u64, BrowserPad>,
+    sleeping: HashMap<u64, sleep::SleepingPad>,
+    next_view_id: u64,
     window: Window,
     settings: Settings,
     store: SettingsStore,
@@ -73,6 +77,7 @@ struct App {
     chrome_ready: bool,
     page_loaded: bool,
     smoke_probe: Option<smoke::Probe>,
+    sleep_probe: Option<sleep_smoke::Probe>,
     navigation_checked: Instant,
     last_removed: Option<(Pad, usize)>,
     _tray: TrayIcon,
@@ -87,7 +92,8 @@ struct App {
 
 pub fn run() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    let smoke = arguments.iter().any(|arg| arg == "--smoke-test");
+    let sleep_smoke = arguments.iter().any(|arg| arg == "--sleep-smoke-test");
+    let smoke = sleep_smoke || arguments.iter().any(|arg| arg == "--smoke-test");
     let data_dir = arguments
         .windows(2)
         .find(|args| args[0] == "--data-dir")
@@ -113,8 +119,12 @@ pub fn run() -> Result<()> {
     let Some(mut settings) = load_settings(&store, smoke)? else {
         return Ok(());
     };
+    let mut sleep_probe = sleep_smoke.then(sleep_smoke::Probe::new).transpose()?;
     if smoke {
-        settings = Settings::default().add("https://example.com")?;
+        let address = sleep_probe
+            .as_ref()
+            .map_or("https://example.com", |probe| probe.address());
+        settings = Settings::default().add(address)?;
     }
     let proxy = event_loop.create_proxy();
     let mut app: Option<App> = None;
@@ -130,7 +140,13 @@ pub fn run() -> Result<()> {
                 smoke,
                 settings.clone(),
             ) {
-                Ok(created) => app = Some(created),
+                Ok(mut created) => {
+                    if let Some(probe) = sleep_probe.take() {
+                        created.smoke_probe = None;
+                        created.sleep_probe = Some(probe);
+                    }
+                    app = Some(created);
+                }
                 Err(error) => {
                     eprintln!("Open Slide Pad：{error:#}");
                     if !smoke {
@@ -207,6 +223,8 @@ impl App {
         let mut app = Self {
             chrome,
             pads: HashMap::new(),
+            sleeping: HashMap::new(),
+            next_view_id: 1,
             window,
             home: settings.pads.is_empty(),
             settings,
@@ -225,6 +243,7 @@ impl App {
             chrome_ready: false,
             page_loaded: false,
             smoke_probe: smoke.then(smoke::Probe::default),
+            sleep_probe: None,
             navigation_checked: Instant::now(),
             last_removed: None,
             _tray: tray,
@@ -241,7 +260,7 @@ impl App {
         Ok(app)
     }
 
-    /// 隱藏且 hot edge 關閉時完全不輪詢；動畫與拖曳期間提高更新頻率。
+    /// 收起且 hot edge 关闭时，只在后台休眠到期时唤醒；动画与拖曳期间提高频率。
     fn next_wake(&self) -> ControlFlow {
         let activity = Activity {
             probing: self.smoke,
@@ -251,11 +270,13 @@ impl App {
             visible: self.visible,
             hot_edge: self.settings.hot_edge,
         };
-        activity
-            .wake_interval()
-            .map_or(ControlFlow::Wait, |interval| {
-                ControlFlow::WaitUntil(Instant::now() + interval)
-            })
+        let now = Instant::now();
+        let activity_wake = activity.wake_interval().map(|interval| now + interval);
+        activity_wake
+            .into_iter()
+            .chain(self.sleep_wake(now))
+            .min()
+            .map_or(ControlFlow::Wait, ControlFlow::WaitUntil)
     }
 
     fn show(&mut self, by: OpenedBy) -> Result<()> {
@@ -333,33 +354,11 @@ impl App {
             && let Some(id) = self.settings.active
             && !self.pads.contains_key(&id)
         {
-            let pad = self
-                .settings
-                .pads
-                .iter()
-                .find(|pad| pad.id == id)
-                .context("網站不存在")?;
-            let view = browser::build(
-                &self.window,
-                pad,
-                self.proxy.clone(),
-                self.frame.width,
-                self.frame.height,
-                self.smoke,
-                &self.user_agent,
-            )?;
-            self.pads.insert(
-                id,
-                BrowserPad {
-                    view,
-                    title: pad.title.clone(),
-                    address: pad.url.clone(),
-                    pending: Some(pad.url.clone()),
-                    load: LoadWatch::requested(),
-                    progress: 0.0,
-                    history: (false, false),
-                },
-            );
+            self.wake_pad(id)?;
+        }
+        let now = Instant::now();
+        for (id, pad) in &mut self.pads {
+            pad.sleep.update(self.settings.active == Some(*id), now);
         }
         for (id, pad) in &self.pads {
             // 失敗畫面畫在控制面板上；原生網頁視圖永遠蓋在 HTML 上面，所以要先藏起來。
@@ -381,6 +380,7 @@ impl App {
             "shortcut_error": self.shortcut_error.as_ref().map(|error| self.settings.language.text(error)),
             "home": self.home,
             "undo_title": self.last_removed.as_ref().map(|(pad, _)| &pad.title),
+            "sleeping": self.sleeping.keys().collect::<Vec<_>>(),
             "title": active.map(|pad| &pad.title),
             "address": active.map(|pad| failure.and(pad.pending.as_ref()).unwrap_or(&pad.address)),
             "loading": active.is_some_and(|pad| pad.load.is_loading()),
@@ -415,12 +415,12 @@ impl App {
             }
             Event::Command(command) => self.command(command, flow)?,
             Event::Title(id, title) => {
-                if let Some(pad) = self.pads.get_mut(&id) {
+                if let Some(pad) = self.live_view_mut(id) {
                     pad.title = title;
                 }
             }
             Event::Load(id, finished, address) => {
-                if let Some(pad) = self.pads.get_mut(&id) {
+                if let Some(pad) = self.live_view_mut(id) {
                     // 首次載入失敗時 WebKit 會改為 commit about:blank 並回報完成；
                     // 那不是 App 要求的頁面，不能算載入成功，交給輪詢判定失敗。
                     if web_url(&address).is_ok() {
@@ -438,18 +438,21 @@ impl App {
                 self.sync_views()?;
             }
             Event::Crashed(id) => {
-                if let Some(pad) = self.pads.get_mut(&id) {
+                if let Some(pad) = self.live_view_mut(id) {
                     pad.load.crashed();
                 }
                 self.sync_views()?;
             }
             Event::Popup(id, address) => {
-                if let Some(pad) = self.pads.get(&id) {
-                    pad.view.load_url(&address)?;
+                if self.pads.values().any(|pad| pad.view_id == id) {
+                    self.command(Command::Add { address }, flow)?;
                 }
             }
             Event::SmokeResult(name, passed) => {
                 if let Some(probe) = &mut self.smoke_probe {
+                    probe.receive(name, passed);
+                }
+                if let Some(probe) = &mut self.sleep_probe {
                     probe.receive(name, passed);
                 }
             }
@@ -463,6 +466,12 @@ impl App {
                 self.chrome_ready = true;
             }
             Command::SetShortcut { shortcut } => self.set_shortcut(shortcut)?,
+            Command::SetSleep { minutes } => {
+                self.commit(Settings {
+                    sleep_after_minutes: minutes,
+                    ..self.settings.clone()
+                })?;
+            }
             Command::SetLanguage { language } => {
                 self.commit(Settings {
                     language,
@@ -498,7 +507,13 @@ impl App {
                 self.commit(self.settings.remove(id)?)?;
                 self.last_removed = Some((removed, position));
                 self.pads.remove(&id);
+                self.sleeping.remove(&id);
                 self.home = self.settings.pads.is_empty();
+            }
+            Command::PadMenu { id } => {
+                if self.settings.pads.iter().any(|pad| pad.id == id) {
+                    menus::show_pad_menu(&self.window, id, self.settings.language)?;
+                }
             }
             Command::Select { id } => {
                 self.select(id)?;
@@ -723,6 +738,16 @@ impl App {
                 *flow = ControlFlow::ExitWithCode(1);
             }
             self.smoke_probe = Some(probe);
+        }
+        if let Some(mut probe) = self.sleep_probe.take() {
+            if let Err(error) = probe.poll(self, flow) {
+                eprintln!("SLEEP SMOKE FAILED：{error:#}");
+                *flow = ControlFlow::ExitWithCode(1);
+            }
+            self.sleep_probe = Some(probe);
+        }
+        if self.sleep_background(now)? {
+            self.render()?;
         }
         if let Some((start, opening)) = self.animation {
             let progress =

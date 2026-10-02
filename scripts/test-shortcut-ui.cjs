@@ -68,6 +68,44 @@ assert.deepEqual(sent.at(-1), {action:'set_shortcut', shortcut:{control:false, o
 assert.equal(ids.get('shortcut-control').checked, false, '恢復預設必須清除尚未套用的修飾鍵草稿');
 assert.equal(ids.get('shortcut-key').value, 'Space', '恢復預設必須清除尚未套用的按鍵草稿');
 console.log('PASS shortcut reset clears unsaved draft and submits the default IPC');
+
+// 右键菜单不切换 active；关闭目标由点击的分页 ID 决定。
+const tabState={...state,home:false,settings:{...state.settings,active:7,pads:[
+  {id:7,title:'First',url:'https://example.com/'},
+  {id:42,title:'Second',url:'https://example.org/'},
+]}};
+ctx.window.render(tabState);
+let menuPrevented=false;
+const beforeMenu=sent.length;
+ids.get('pads').children[1].oncontextmenu({preventDefault(){menuPrevented=true;}});
+assert.ok(menuPrevented,'分頁右鍵應阻止預設網頁選單');
+assert.equal(sent.length,beforeMenu+1,'右鍵只開啟選單，不切換或移除分頁');
+assert.deepEqual(sent.at(-1),{action:'pad_menu',id:42});
+ids.get('pads').children[0].onclick();
+assert.deepEqual(sent.at(-1),{action:'select',id:7},'左鍵仍切換分頁');
+ctx.window.render(state);
+console.log('PASS sidebar context menu targets the clicked tab and preserves left click');
+
+// 设置只在保存回覆后显示新值；休眠状态变化必须独立刷新分页标记。
+ctx.window.showSettings();
+assert.equal(ids.get('sleep-select').value,'15');
+ids.get('sleep-select').value='30';
+ids.get('sleep-select').onchange();
+assert.deepEqual(sent.at(-1),{action:'set_sleep',minutes:30});
+assert.equal(ids.get('sleep-select').value,'15','保存回覆前維持原設定');
+ctx.window.render({...state,settings:{...state.settings,sleep_after_minutes:30}});
+assert.equal(ids.get('sleep-select').value,'30');
+ids.get('sleep-select').value='0';
+ids.get('sleep-select').onchange();
+assert.deepEqual(sent.at(-1),{action:'set_sleep',minutes:0});
+ctx.window.render(tabState);
+ctx.window.render({...tabState,sleeping:[42]});
+assert.match(ids.get('pads').children[1].className,/sleeping/);
+assert.match(ids.get('pads').children[1].title,/Sleeping/);
+ctx.window.render({...tabState,sleeping:[]});
+assert.doesNotMatch(ids.get('pads').children[1].className,/sleeping/);
+ctx.window.render(state);
+console.log('PASS sleep setting awaits persistence and tab sleep markers refresh independently');
 const before = sent.length;
 ids.get('resize-grip').onpointerdown({button:2});
 assert.equal(sent.length, before, '右鍵不可開始調整大小');

@@ -16,6 +16,9 @@ pub enum Command {
     SetShortcut {
         shortcut: sliderust::shortcut::Shortcut,
     },
+    SetSleep {
+        minutes: u16,
+    },
     Add {
         address: String,
     },
@@ -23,6 +26,9 @@ pub enum Command {
         id: u64,
     },
     Remove {
+        id: u64,
+    },
+    PadMenu {
         id: u64,
     },
     Rename {

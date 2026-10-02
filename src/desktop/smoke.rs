@@ -1,5 +1,5 @@
 //! 以原生選單與 responder 契約驗證整合，不送出系統鍵盤輸入。
-use super::{App, Event, browser, chrome::Command, native, shortcuts};
+use super::{App, Event, browser, chrome::Command, menus, native, shortcuts};
 use anyhow::{Context, Result, ensure};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
@@ -13,6 +13,8 @@ use wry::{WebView, WebViewExtMacOS};
 enum Stage {
     #[default]
     Page,
+    PopupLink,
+    PopupScript,
     Frames,
     Spa,
     Address,
@@ -61,6 +63,8 @@ pub struct Probe {
     frames_polled: Option<Instant>,
     frames_loaded: Option<Instant>,
     started: Option<Instant>,
+    popup_source: Option<(u64, String)>,
+    popup_link: Option<u64>,
 }
 
 // 本機沒有服務監聽的埠：連線立刻被拒，用來重現「載入失敗」。
@@ -105,6 +109,58 @@ impl Probe {
         );
         match self.stage {
             Stage::Page if app.chrome_ready && app.page_loaded => {
+                let id = app.settings.active.context("smoke 網站不存在")?;
+                let address =
+                    browser::current_url(active_view(app)?).context("smoke 網站不存在")?;
+                self.popup_source = Some((id, address));
+                active_view(app)?.evaluate_script(
+                    "(() => { const link = document.createElement('a'); link.href = 'https://example.com/?sliderust-tab=link'; link.target = '_blank'; document.body.append(link); link.click(); })()",
+                )?;
+                self.stage = Stage::PopupLink;
+            }
+            Stage::PopupLink if app.settings.pads.len() == 2 => {
+                self.check_popup_source(app)?;
+                let id = app.settings.active.context("smoke 網站不存在")?;
+                ensure!(
+                    active_pad(app)?.address == "https://example.com/?sliderust-tab=link",
+                    "新分頁連結未載入獨立頁面"
+                );
+                self.popup_link = Some(id);
+                let source = self.popup_source.as_ref().unwrap().0;
+                app.pads[&source].view.evaluate_script(
+                    "window.open('https://example.com/?sliderust-tab=script', '_blank')",
+                )?;
+                self.stage = Stage::PopupScript;
+            }
+            Stage::PopupScript if app.settings.pads.len() == 3 => {
+                self.check_popup_source(app)?;
+                ensure!(
+                    active_pad(app)?.address == "https://example.com/?sliderust-tab=script",
+                    "window.open 未載入獨立頁面"
+                );
+                let active = app.settings.active.context("smoke 網站不存在")?;
+                let background = self.popup_link.unwrap();
+                close_popup(app, background, flow)?;
+                ensure!(
+                    app.settings.active == Some(active) && !app.pads.contains_key(&background),
+                    "關閉背景分頁改變目前分頁"
+                );
+                close_popup(app, active, flow)?;
+                let source = self.popup_source.as_ref().unwrap().0;
+                ensure!(
+                    app.settings.active == Some(source) && app.settings.pads.len() == 1,
+                    "關閉目前分頁未返回來源分頁"
+                );
+                app.handle(Event::Command(Command::UndoRemove), flow)?;
+                ensure!(
+                    app.settings.active == Some(active) && app.pads.contains_key(&active),
+                    "關閉分頁無法復原"
+                );
+                close_popup(app, active, flow)?;
+                self.check_popup_source(app)?;
+                eprintln!(
+                    "SMOKE target_blank_new_pad=true window_open_new_pad=true popup_source_preserved=true close_background_pad=true close_active_pad=true undo_close_pad=true"
+                );
                 verify_user_agent(app)?;
                 active_view(app)?.evaluate_script(EMBED_FRAMES)?;
                 self.frames_started = Some(Instant::now());
@@ -417,6 +473,19 @@ impl Probe {
         Ok(())
     }
 
+    fn check_popup_source(&self, app: &App) -> Result<()> {
+        let (id, address) = self.popup_source.as_ref().context("smoke 網站不存在")?;
+        ensure!(
+            browser::current_url(&app.pads[id].view).as_ref() == Some(address),
+            "新分頁開啟改變來源頁面"
+        );
+        ensure!(
+            app.pads.len() == app.settings.pads.len(),
+            "分頁未建立獨立 WebView"
+        );
+        Ok(())
+    }
+
     /// 等 srcdoc 與 blob 文件回報載入，再多觀察半秒，確認 data: 文件始終被擋下。
     fn frames_settled(&mut self, app: &App) -> Result<bool> {
         ensure!(
@@ -455,6 +524,12 @@ impl Probe {
         }
         Ok(false)
     }
+}
+
+fn close_popup(app: &mut App, id: u64, flow: &mut ControlFlow) -> Result<()> {
+    let command =
+        menus::close_pad_command(&format!("close_pad_{id}")).context("smoke 關閉分頁命令不存在")?;
+    app.handle(Event::Command(command), flow)
 }
 
 /// 網站靠 UA 判斷瀏覽器：遠端網頁回報的字串必須就是 App 組出的 Safari 相容 UA。

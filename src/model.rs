@@ -5,6 +5,11 @@ use std::collections::{BTreeMap, HashSet};
 use url::Url;
 
 pub const MAX_PADS: usize = 20;
+pub const SLEEP_MINUTES: [u16; 6] = [0, 5, 15, 30, 60, 120];
+
+fn default_sleep_after_minutes() -> u16 {
+    15
+}
 
 fn default_top_offset() -> f64 {
     8.0
@@ -171,6 +176,8 @@ pub struct Settings {
     pub top_offset: f64,
     pub pinned: bool,
     pub hot_edge: bool,
+    #[serde(default = "default_sleep_after_minutes")]
+    pub sleep_after_minutes: u16,
     #[serde(default)]
     pub toggle_shortcut: Shortcut,
     /// 本版不認得的頂層欄位。原樣保留並寫回，舊版開過新版設定後不會把新欄位洗掉。
@@ -192,6 +199,7 @@ impl Default for Settings {
             top_offset: default_top_offset(),
             pinned: false,
             hot_edge: true,
+            sleep_after_minutes: default_sleep_after_minutes(),
             toggle_shortcut: Shortcut::default(),
             unknown_fields: BTreeMap::new(),
         }
@@ -211,6 +219,10 @@ impl Settings {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.version == 1, "設定版本不支援，原檔已保留");
         self.toggle_shortcut.validate()?;
+        ensure!(
+            SLEEP_MINUTES.contains(&self.sleep_after_minutes),
+            "休眠時間不支援"
+        );
         ensure!((360.0..=960.0).contains(&self.width), "側欄寬度超出範圍");
         ensure!(
             self.height
@@ -355,6 +367,44 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_settings_default_to_fifteen_minutes_and_supported_durations_round_trip() {
+        let mut old = serde_json::to_value(super::Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("sleep_after_minutes");
+        assert_eq!(
+            serde_json::from_value::<super::Settings>(old)
+                .unwrap()
+                .sleep_after_minutes,
+            15
+        );
+        for minutes in super::SLEEP_MINUTES {
+            let settings = super::Settings {
+                sleep_after_minutes: minutes,
+                ..Default::default()
+            };
+            settings.validate().unwrap();
+            assert_eq!(
+                serde_json::from_str::<super::Settings>(&serde_json::to_string(&settings).unwrap())
+                    .unwrap(),
+                settings
+            );
+        }
+    }
+    #[test]
+    fn sleep_duration_rejects_unsupported_and_malformed_values() {
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(1),
+            serde_json::json!(121),
+            serde_json::json!("15"),
+            serde_json::json!(null),
+        ] {
+            let mut encoded = serde_json::to_value(super::Settings::default()).unwrap();
+            encoded["sleep_after_minutes"] = value;
+            let loaded = serde_json::from_value::<super::Settings>(encoded);
+            assert!(loaded.is_err() || loaded.unwrap().validate().is_err());
+        }
+    }
     use super::*;
 
     #[test]

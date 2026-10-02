@@ -1,4 +1,12 @@
 {
+  "背景分頁休眠": "Background tab sleep",
+  "{minutes} 分鐘": "{minutes} minutes",
+  "停用": "Disabled",
+  "已休眠": "Sleeping",
+  "休眠時間不支援": "Unsupported sleep duration",
+  "網頁識別碼已用盡": "Web view identifiers exhausted",
+  "閒置後釋放記憶體；目前分頁保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。": "Release memory after inactivity; the current tab stays awake. Restoring reloads the page, so unsaved input or live state may not be preserved.",
+  "關閉分頁": "Close Tab",
   "網站側欄": "Site sidebar",
   "Open Slide Pad 首頁": "Open Slide Pad home",
   "首頁": "Home",

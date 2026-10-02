@@ -1,6 +1,7 @@
 //! 一個已建立原生網頁視圖的網站分頁，以及它的載入狀態。
 use anyhow::Result;
 use sliderust::load::LoadWatch;
+use sliderust::sleep::SleepTimer;
 use wry::{WebView, WebViewExtMacOS};
 
 /// 進度條至少前進這麼多才重畫，避免每次輪詢都送一次畫面更新。
@@ -8,6 +9,8 @@ const PROGRESS_STEP: f64 = 0.02;
 
 pub(super) struct BrowserPad {
     pub(super) view: WebView,
+    pub(super) view_id: u64,
+    pub(super) sleep: SleepTimer,
     pub(super) title: String,
     pub(super) address: String,
     /// App 要求載入、尚未顯示的網址；失敗時「重試」與網址列都用它，不用 WebKit 退回的舊網址。
