@@ -5,6 +5,10 @@ const $ = id => document.getElementById(id);
 let snapshot = null;
 let overlayMode = null;
 let toastTimer;
+let returnFocus = null;
+let settingsSection = 'general';
+let settingsView = null;
+const MAX_SITES = 20;
 
 function send(action, fields = {}) {
   window.ipc.postMessage(JSON.stringify({action, ...fields}));
@@ -30,6 +34,7 @@ function hideToast() {
 }
 function armToastTimer() {
   clearTimeout(toastTimer);
+  if ($('toast').contains(document.activeElement) || $('toast').matches(':hover')) return;
   toastTimer = setTimeout(hideToast, TOAST_DURATION_MS);
 }
 window.showToast = message => {
@@ -37,13 +42,24 @@ window.showToast = message => {
   $('toast').hidden = false;
   armToastTimer();
 };
+function setBackgroundInert(inert) {
+  document.querySelectorAll('.rail, .toolbar, .stage, .status, .resize-grip').forEach(element => { element.inert = inert; });
+}
 window.closeOverlay = () => {
+  if ($('overlay').contains(document.activeElement)) document.activeElement.blur();
   overlayMode = null;
   $('overlay').hidden = true;
+  setBackgroundInert(false);
+  returnFocus = null;
+  settingsView = null;
+  settingsSection = 'general';
 };
 function dismiss() {
+  const target = returnFocus;
   window.closeOverlay();
   send('overlay', {open:false});
+  const control = target?.element?.isConnected ? target.element : $(target?.id);
+  (control && !control.disabled && control.tabIndex >= 0 && !control.closest('[hidden]') ? control : $('home-button')).focus();
 }
 window.focusAddress = () => {
   window.closeOverlay();
@@ -51,11 +67,19 @@ window.focusAddress = () => {
   $('address').select();
 };
 function overlay(title, mode) {
+  if (overlayMode === 'settings') settingsView = captureSettingsView();
+  if (!overlayMode) {
+    const active = document.activeElement;
+    returnFocus = {element:active, id:active?.id};
+  }
   overlayMode = mode;
   send('overlay', {open:true});
   const element = $('overlay');
   element.replaceChildren();
   element.hidden = false;
+  element.dataset.mode = mode;
+  element.scrollTop = 0;
+  setBackgroundInert(true);
   const header = text('div', '', 'overlay-header');
   const close = button('✕', dismiss, 'icon');
   close.id = 'overlay-close';
@@ -64,6 +88,7 @@ function overlay(title, mode) {
   heading.id = 'overlay-title';
   header.append(heading, close);
   element.append(header);
+  close.focus();
   return element;
 }
 function inputField(id, label, value = '') {
@@ -86,6 +111,11 @@ function submitRow(label) {
 }
 window.showAddForm = () => {
   const element = overlay(t('新增網站'), 'add');
+  if ((snapshot?.settings.pads.length || 0) >= MAX_SITES) {
+    element.append(text('p', t('已達 20 個網站上限。請先到管理網站移除不需要的網站。'), 'hint'),
+      button(t('管理網站'), () => window.showSettings('sites'), 'primary'));
+    return;
+  }
   element.append(text('p', t('加入後，可從左側或首頁直接開啟。'), 'hint'));
   const form = document.createElement('form');
   const {fieldLabel, input} = inputField('new-address', t('網址或搜尋內容'));
@@ -112,12 +142,13 @@ function editPad(pad) {
     event.preventDefault();
     send('rename', {id:pad.id, title:input.value});
   };
-  element.append(form, button(t('← 返回設定'), window.showSettings, 'text-button'));
+  element.append(form, button(t('← 返回設定'), () => window.showSettings('sites'), 'text-button'));
   input.focus();
   input.select();
 }
-window.showSettings = () => {
+window.showSettings = (section = settingsSection) => {
   const element = overlay(t('設定'), 'settings');
+  settingsSection = section;
   renderSettings(element);
 };
 function importRow(entry, index) {
@@ -134,7 +165,7 @@ function selectedIndices(rows) {
   return rows.filter(({box}) => box.checked && !box.disabled).map(({box}) => Number(box.value));
 }
 // 到達上限後，其餘未勾選的項目不可再勾；已加入的項目一直停用。
-function bindImportLimit(rows, entries, remaining, counter, submit) {
+function bindImportLimit(rows, entries, remaining, counter, submit, hiddenCount) {
   const refresh = () => {
     const count = selectedIndices(rows).length;
     counter.textContent = remaining
@@ -142,23 +173,38 @@ function bindImportLimit(rows, entries, remaining, counter, submit) {
       : t('側欄已滿，請先移除網站再匯入。');
     rows.forEach(({box}, index) => { if (!entries[index].added) box.disabled = !box.checked && count >= remaining; });
     submit.disabled = count === 0;
+    const hidden = rows.filter(({row, box}) => row.hidden && box.checked && !entries[Number(box.value)].added).length;
+    hiddenCount.hidden = hidden === 0;
+    hiddenCount.textContent = hidden ? t(' · 隱藏 {count}', {count:hidden}) : '';
+    hiddenCount.title = t('其中 {count} 個已選書籤不在目前篩選結果中。', {count:hidden});
+    counter.append(hiddenCount);
   };
   rows.forEach(({box}) => { box.onchange = refresh; });
   refresh();
+  return refresh;
 }
 // 篩選只隱藏列，藏起來的勾選仍算數。
-function bindImportFilter(input, rows, entries) {
+function bindImportFilter(input, rows, entries, empty, refresh) {
   input.oninput = () => {
     const needle = input.value.trim().toLowerCase();
     rows.forEach(({row}, index) => {
       row.hidden = Boolean(needle) && !entries[index].title.toLowerCase().includes(needle) && !entries[index].url.toLowerCase().includes(needle);
     });
+    empty.hidden = rows.some(({row}) => !row.hidden);
+    refresh();
   };
 }
 // 候選清單由 Rust 一次推送，不進 render 的狀態；送回的只有索引，避免超過 IPC 訊息上限。
 window.showImport = ({entries, remaining}) => {
+  const fromSettings = overlayMode === 'settings';
   const element = overlay(t('從 Chrome 匯入書籤'), 'import');
-  const back = button(t('← 返回設定'), window.showSettings, 'text-button');
+  const back = button(fromSettings ? t('← 返回設定') : t('← 返回首頁'), () => {
+    if (fromSettings) {
+      send('overlay', {open:false});
+      window.showSettings('sites');
+    } else dismiss();
+  }, 'text-button');
+  back.id = 'import-back';
   if (!entries.length) {
     const empty = text('p', t('找不到 Chrome 書籤。只會讀取 Google Chrome 各個設定檔的書籤，不含其他瀏覽器。'), 'hint');
     empty.id = 'import-empty';
@@ -172,19 +218,28 @@ window.showImport = ({entries, remaining}) => {
   const counter = text('p', '', 'hint');
   counter.id = 'import-count';
   counter.setAttribute('aria-live', 'polite');
+  const hiddenCount = text('span', '');
+  hiddenCount.id = 'import-hidden-count';
+  const empty = text('p', t('找不到符合的書籤，請試試其他名稱或網址。'), 'hint');
+  empty.id = 'import-no-results';
+  empty.hidden = true;
+  empty.setAttribute('role', 'status');
   const list = text('div', '', 'import-list');
   list.id = 'import-list';
   const rows = entries.map(importRow);
   rows.forEach(({row}) => list.append(row));
+  const results = text('div', '', 'import-results');
+  results.id = 'import-results';
+  results.append(empty, list);
   const actions = submitRow(t('加入所選'));
   actions.lastChild.id = 'import-submit';
-  bindImportLimit(rows, entries, remaining, counter, actions.lastChild);
-  bindImportFilter(input, rows, entries);
+  const refresh = bindImportLimit(rows, entries, remaining, counter, actions.lastChild, hiddenCount);
+  bindImportFilter(input, rows, entries, empty, refresh);
   form.onsubmit = event => {
     event.preventDefault();
     send('import', {indices:selectedIndices(rows)});
   };
-  form.append(fieldLabel, input, counter, list, actions);
+  form.append(fieldLabel, input, counter, results, actions);
   element.append(form, back);
   input.focus();
 };
@@ -197,6 +252,7 @@ function row(title, description, control) {
 }
 function toggle(label, checked, action) {
   const control = button('', () => send(action), 'switch-button');
+  control.id = `setting-${action}`;
   control.setAttribute('role', 'switch');
   control.setAttribute('aria-label', label);
   control.setAttribute('aria-checked', String(checked));
@@ -215,7 +271,7 @@ function sideControl(side) {
   return group;
 }
 function padRow(pad, index, total) {
-  const entry = text('div', '', 'site-row');
+  const entry = text('div', '', 'site-row managed-site');
   const info = text('div', '', 'site-info');
   info.append(text('strong', pad.title), text('small', pad.url));
   const actions = text('div', '', 'site-actions');
@@ -228,6 +284,7 @@ function padRow(pad, index, total) {
   const rename = button(t('編輯'), () => editPad(pad), 'mini-button');
   rename.setAttribute('aria-label', t('重新命名 {name}', {name:pad.title}));
   const remove = button('✕', () => send('remove', {id:pad.id}), 'mini-button danger');
+  [[up, 'up'], [down, 'down'], [rename, 'rename'], [remove, 'remove']].forEach(([control, name]) => { control.id = `site-${pad.id}-${name}`; });
   remove.setAttribute('aria-label', t('移除 {name}', {name:pad.title}));
   actions.append(up, down, rename, remove);
   entry.append(info, actions);
@@ -290,6 +347,7 @@ function shortcutEditor() {
   });
   select.value = snapshot.settings.toggle_shortcut.key;
   const actions = submitRow(t('套用快捷鍵'));
+  actions.lastChild.id = 'shortcut-submit';
   const reset = button(t('恢復預設'), () => {
     const shortcut = {control:false, option:false, shift:true, command:true, key:'Space'};
     // 已保存預設值時後端狀態不變，仍須清除表單尚未套用的草稿。
@@ -316,12 +374,90 @@ function shortcutEditor() {
   };
   return form;
 }
+function captureSettingsView() {
+  const form = $('shortcut-form');
+  if (!form || !$('overlay').contains(form)) return settingsView;
+  const draft = {key:$('shortcut-key').value};
+  SHORTCUT_MODIFIERS.forEach(([name]) => { draft[name] = $(`shortcut-${name}`).checked; });
+  const active = document.activeElement;
+  return {
+    draft, recorder:$('shortcut-recorder').value,
+    sourceShortcut:JSON.stringify(snapshot.settings.toggle_shortcut),
+    focusId:$('overlay').contains(active) ? active.id : null,
+    scrollTop:$('overlay').scrollTop,
+  };
+}
+function selectSettingsSection(section, focus = false) {
+  settingsSection = ['general', 'sites', 'shortcuts'].includes(section) ? section : 'general';
+  ['general', 'sites', 'shortcuts'].forEach(name => {
+    const selected = name === settingsSection;
+    $(`settings-${name}`).hidden = !selected;
+    const tab = $(`settings-tab-${name}`);
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  });
+  if (focus) {
+    $('overlay').scrollTop = 0;
+    $(`settings-tab-${settingsSection}`).focus();
+  }
+}
+function settingsNavigation() {
+  const nav = text('div', '', 'settings-nav');
+  nav.setAttribute('role', 'tablist');
+  nav.setAttribute('aria-label', t('設定分類'));
+  const sections = [['general', t('一般')], ['sites', t('網站')], ['shortcuts', t('快捷鍵')]];
+  sections.forEach(([name, label], index) => {
+    const tab = button(label, () => selectSettingsSection(name, true), 'settings-tab');
+    tab.id = `settings-tab-${name}`;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', `settings-${name}`);
+    tab.onkeydown = event => {
+      let next;
+      if (event.key === 'ArrowRight') next = (index + 1) % sections.length;
+      if (event.key === 'ArrowLeft') next = (index + sections.length - 1) % sections.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = sections.length - 1;
+      if (next === undefined) return;
+      event.preventDefault();
+      selectSettingsSection(sections[next][0], true);
+    };
+    nav.append(tab);
+  });
+  return nav;
+}
+function settingsPanel(name) {
+  const panel = text('section', '', 'settings-panel');
+  panel.id = `settings-${name}`;
+  panel.setAttribute('role', 'tabpanel');
+  panel.setAttribute('aria-labelledby', `settings-tab-${name}`);
+  return panel;
+}
+function restoreSettingsView() {
+  selectSettingsSection(settingsSection);
+  if (!settingsView) {
+    $(`settings-tab-${settingsSection}`).focus();
+    return;
+  }
+  // 只有快捷鍵本身成功改變才採用新值；其他偏好更新不能沖掉未套用草稿。
+  if (settingsView.sourceShortcut === JSON.stringify(snapshot.settings.toggle_shortcut)) {
+    fillShortcutDraft(settingsView.draft);
+    $('shortcut-recorder').value = settingsView.recorder;
+  }
+  const active = $(settingsView.focusId);
+  if (active && !active.disabled && !active.closest('[hidden]')) active.focus();
+  else if (settingsView.focusId !== null) $(`settings-tab-${settingsSection}`).focus();
+  $('overlay').scrollTop = settingsView.scrollTop;
+}
 function renderSettings(element) {
   if (!snapshot) return;
   const settings = snapshot.settings;
   $('overlay-title').textContent = t('設定');
   $('overlay-close').setAttribute('aria-label', t('關閉'));
   while (element.children.length > 1) element.lastChild.remove();
+  const general = settingsPanel('general');
+  const sites = settingsPanel('sites');
+  const shortcutsPanel = settingsPanel('shortcuts');
+  element.append(settingsNavigation(), general, sites, shortcutsPanel);
   const languageSelect = document.createElement('select');
   languageSelect.id = 'language-select';
   languageSelect.setAttribute('aria-label', t('介面語言'));
@@ -337,15 +473,15 @@ function renderSettings(element) {
     languageSelect.value = language;
     send('set_language', {language:selected});
   };
-  element.append(row(t('介面語言'), t('切換後立即生效'), languageSelect));
-  element.append(text('h3', t('視窗與顯示'), 'section-title'));
+  general.append(row(t('介面語言'), t('切換後立即生效'), languageSelect));
+  general.append(text('h3', t('視窗與顯示'), 'section-title'));
   const appearance = text('div', '', 'settings-group');
   appearance.append(row(t('側欄位置'), t('從螢幕的哪一側開啟'), sideControl(settings.side)));
   appearance.append(row(t('觸碰邊緣開啟'), t('游標停留片刻即可滑出'),
     toggle(t('觸碰邊緣開啟'), settings.hot_edge, 'hot_edge')));
   appearance.append(row(t('固定顯示'), t('游標移開時仍保留側欄'),
     toggle(t('固定顯示'), settings.pinned, 'pin')));
-  element.append(appearance);
+  general.append(appearance);
   const sleepSelect = document.createElement('select');
   sleepSelect.id = 'sleep-select';
   sleepSelect.setAttribute('aria-label', t('背景分頁休眠'));
@@ -360,37 +496,54 @@ function renderSettings(element) {
     sleepSelect.value = String(snapshot.settings.sleep_after_minutes ?? 15);
     send('set_sleep', {minutes});
   };
-  element.append(row(t('背景分頁休眠'), t('閒置後釋放記憶體；目前分頁保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。'), sleepSelect));
+  general.append(row(t('背景分頁休眠'), t('閒置後釋放記憶體；目前分頁保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。'), sleepSelect));
   const widthLabel = text('label', t('側欄寬度'), 'field width-label');
   widthLabel.htmlFor = 'sidebar-width';
   const widthValue = text('output', `${settings.width} pt`);
   widthValue.htmlFor = 'sidebar-width';
   widthLabel.append(widthValue);
-  element.append(widthLabel);
+  general.append(widthLabel);
   const range = document.createElement('input');
   Object.assign(range, {id:'sidebar-width', type:'range', min:'360', max:'960', step:'20', value:settings.width});
   range.setAttribute('aria-label', t('側欄寬度'));
   range.oninput = () => { widthValue.textContent = `${range.value} pt`; };
   range.onchange = () => send('width', {width:Number(range.value)});
-  element.append(range, row(t('視窗高度'), settings.height === null ? t('跟隨螢幕可用高度') : t('目前 {height} pt · 拖曳邊緣或下角調整', {height:Math.round(settings.height)}),
-    button(t('恢復全高'), () => send('full_height'))));
-  element.append(text('h3', t('快捷鍵'), 'section-title'), shortcutEditor());
-  element.append(text('h3', t('管理網站 · {count} / 20', {count:settings.pads.length}), 'section-title'));
-  settings.pads.forEach((pad, index) => element.append(padRow(pad, index, settings.pads.length)));
-  if (!settings.pads.length) element.append(text('p', t('尚未加入網站，按左側 ＋ 開始。'), 'hint'));
-  element.append(text('p', t('用箭頭調整順序，按編輯重新命名。移除後可在下方復原最近一個捷徑；登入資料不受影響。'), 'hint'));
+  const fullHeight = button(t('恢復全高'), () => send('full_height'));
+  fullHeight.id = 'full-height';
+  general.append(range, row(t('視窗高度'), settings.height === null ? t('跟隨螢幕可用高度') : t('目前 {height} pt · 拖曳邊緣或下角調整', {height:Math.round(settings.height)}), fullHeight));
+  shortcutsPanel.append(shortcutEditor());
+  sites.append(text('h3', t('管理網站 · {count} / 20', {count:settings.pads.length}), 'section-title'));
+  const siteActions = text('div', '', 'site-management-actions');
+  const add = button(t('新增網站'), () => send('new_pad'), 'primary');
+  add.id = 'settings-add-site';
+  add.disabled = settings.pads.length >= MAX_SITES;
   const importButton = button(t('從 Chrome 匯入書籤'), () => send('show_import'), 'pill');
   importButton.id = 'import-bookmarks';
-  element.append(importButton);
-  element.append(text('h3', t('其他快捷鍵'), 'section-title'));
+  importButton.disabled = settings.pads.length >= MAX_SITES;
+  siteActions.append(add, importButton);
+  sites.append(siteActions);
+  settings.pads.forEach((pad, index) => sites.append(padRow(pad, index, settings.pads.length)));
+  if (!settings.pads.length) sites.append(text('p', t('尚未加入網站，按上方「新增網站」開始。'), 'hint'));
+  sites.append(text('p', t('用箭頭調整順序，按編輯重新命名。移除後可在下方復原最近一個捷徑；登入資料不受影響。'), 'hint'));
+  // 對話框開啟時背景是 inert，復原必須在管理區也有入口。
+  if (snapshot.undo_title) {
+    const undo = button(t('復原「{name}」', {name:snapshot.undo_title}), () => send('undo_remove'), 'pill');
+    undo.id = 'settings-undo';
+    sites.append(undo);
+  }
+  shortcutsPanel.append(text('h3', t('其他快捷鍵'), 'section-title'));
   const shortcuts = text('div', '', 'shortcut-list');
   [[t('選取網址'),'⌘ L'],[t('新增網站'),'⌘ T'],[t('重新整理'),'⌘ R'],[t('上一頁／下一頁'),'⌘ [ / ⌘ ]'],[t('切換網站'),'⌘ 1–9'],[t('收合側欄'),'⌘ W'],[t('開啟設定'),'⌘ ,']].forEach(([name, keys]) => {
     const item = text('div', '', 'shortcut-row');
     item.append(text('span', name), text('kbd', keys));
     shortcuts.append(item);
   });
-  element.append(shortcuts, button(t('結束 Open Slide Pad'), () => send('quit'), 'pill'));
-  element.append(text('p', `Open Slide Pad ${APP_VERSION}`, 'version'));
+  shortcutsPanel.append(shortcuts);
+  const quit = button(t('結束 Open Slide Pad'), () => send('quit'), 'pill');
+  quit.id = 'settings-quit';
+  general.append(quit);
+  general.append(text('p', `Open Slide Pad ${APP_VERSION}`, 'version'));
+  restoreSettingsView();
 }
 function padInitial(pad) {
   return Array.from(pad.title.replace(/^www\./, '')).slice(0,2).join('').toUpperCase();
@@ -402,9 +555,12 @@ function siteDomain(address) {
 function renderHomePads(pads) {
   $('site-count').textContent = String(pads.length);
   $('empty-state').hidden = pads.length > 0;
+  $('home-tools').hidden = pads.length === 0;
+  if (!pads.length) $('site-filter').value = '';
   $('saved-sites').replaceChildren();
   pads.forEach((pad, index) => {
     const entry = button('', () => send('select', {id:pad.id}), 'saved-site');
+    entry.id = `site-${pad.id}`;
     entry.setAttribute('aria-label', t('開啟 {name}', {name:pad.title}));
     const copy = text('div', '', 'site-info');
     copy.append(text('strong', pad.title), text('small', siteDomain(pad.url)));
@@ -415,6 +571,17 @@ function renderHomePads(pads) {
     entry.append(arrow);
     $('saved-sites').append(entry);
   });
+  filterHomePads();
+}
+function filterHomePads() {
+  const needle = $('site-filter').value.trim().toLowerCase();
+  let visible = 0;
+  (snapshot?.settings.pads || []).forEach(pad => {
+    const hidden = !`${pad.title} ${pad.url}`.toLowerCase().includes(needle);
+    $(`site-${pad.id}`).hidden = hidden;
+    if (!hidden) visible += 1;
+  });
+  $('site-no-results').hidden = !snapshot?.settings.pads.length || visible > 0;
 }
 function renderPads(state) {
   $('pads').replaceChildren();
@@ -423,8 +590,9 @@ function renderPads(state) {
     const selected = !state.home && state.settings.active === pad.id;
     const sleeping = state.sleeping?.includes(pad.id);
     const element = button(initial, () => send('select', {id:pad.id}), `pad${selected ? ' active' : ''}${sleeping ? ' sleeping' : ''}`);
+    element.id = `pad-${pad.id}`;
     element.title = pad.title + (sleeping ? ` · ${t('已休眠')}` : '') + (index < 9 ? ` · ⌘${index + 1}` : '');
-    element.setAttribute('aria-label', pad.title);
+    element.setAttribute('aria-label', pad.title + (sleeping ? ` · ${t('已休眠')}` : ''));
     element.setAttribute('aria-pressed', String(selected));
     element.oncontextmenu = event => {
       event.preventDefault();
@@ -469,12 +637,13 @@ window.render = state => {
   if (languageChanged) {
     language = nextLanguage;
     localizeDocument();
-    renderQuickSites();
   }
   const settingsChanged = JSON.stringify(snapshot?.settings) !== JSON.stringify(state.settings);
   const homeChanged = snapshot?.home !== state.home;
   const sleepingChanged = JSON.stringify(snapshot?.sleeping) !== JSON.stringify(state.sleeping);
   const shortcutChanged = snapshot?.shortcut_error !== state.shortcut_error || snapshot?.shortcut_active !== state.shortcut_active;
+  const undoChanged = snapshot?.undo_title !== state.undo_title;
+  if (overlayMode === 'settings') settingsView = captureSettingsView();
   if (!snapshot || Boolean(snapshot.settings.pads.length) !== Boolean(state.settings.pads.length)) {
     $('suggestions').open = state.settings.pads.length === 0;
   }
@@ -483,12 +652,21 @@ window.render = state => {
   document.documentElement.dataset.side = settings.side;
   if (settingsChanged || homeChanged || sleepingChanged) renderPads(state);
   if (settingsChanged) renderHomePads(settings.pads);
+  if (settingsChanged || languageChanged) renderQuickSites();
+  const full = settings.pads.length >= MAX_SITES;
+  $('add').disabled = $('hero-add').disabled = full;
+  const addTitle = full ? '已達 20 個網站上限' : '新增網站 ⌘T';
+  $('add').setAttribute('data-i18n-title', addTitle);
+  $('add').title = t(addTitle);
+  $('hero-add').title = full ? t(addTitle) : t('新增網站');
   $('home').hidden = !state.home;
   $('home-button').setAttribute('aria-pressed', String(state.home));
   $('pin').classList.toggle('active', settings.pinned);
   $('pin').setAttribute('aria-pressed', String(settings.pinned));
   $('back').disabled = state.home || !state.back;
   $('forward').disabled = state.home || !state.forward;
+  $('reload').disabled = state.home;
+  $('external').disabled = state.home;
   if (document.activeElement !== $('address')) $('address').value = state.home ? '' : (state.address || '');
   $('status').classList.toggle('loading', !state.home && state.loading);
   renderLoadState(state);
@@ -499,10 +677,8 @@ window.render = state => {
   $('status-shortcut').hidden = state.home || Boolean(state.undo_title);
   $('status-shortcut').textContent = state.shortcut_active ? state.shortcut_label : t('快捷鍵未啟用');
   $('home-shortcut').textContent = state.shortcut_active ? state.shortcut_label : t('選單列圖示');
-  if ((settingsChanged || shortcutChanged) && overlayMode === 'settings') {
-    const languageFocused = document.activeElement?.id === 'language-select';
+  if ((settingsChanged || shortcutChanged || undoChanged) && overlayMode === 'settings') {
     renderSettings($('overlay'));
-    if (languageFocused) $('language-select').focus();
   }
 };
 document.querySelectorAll('[data-action]').forEach(element => {
@@ -511,10 +687,22 @@ document.querySelectorAll('[data-action]').forEach(element => {
 $('add').onclick = $('hero-add').onclick = () => send('new_pad');
 $('empty-import').onclick = () => send('show_import');
 $('settings').onclick = () => send('show_settings');
+$('manage-sites').onclick = () => {
+  settingsSection = 'sites';
+  send('show_settings');
+};
+$('site-filter').oninput = filterHomePads;
 $('toast-close').onclick = hideToast;
 // 滑鼠停在提示上時不倒數，避免訊息還沒讀完就消失。
 $('toast').onmouseenter = () => clearTimeout(toastTimer);
 $('toast').onmouseleave = armToastTimer;
+$('toast').onfocusin = () => clearTimeout(toastTimer);
+$('toast').onfocusout = event => {
+  if (!$('toast').contains(event.relatedTarget)) {
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(armToastTimer, 0);
+  }
+};
 $('resize-grip').onpointerdown = event => {
   if (event.button !== 0) return;
   event.preventDefault();
@@ -526,14 +714,21 @@ $('address-form').onsubmit = event => {
   $('address').blur();
 };
 $('address').onfocus = () => $('address').select();
+function canonicalSite(address) {
+  try { const url = new URL(address); return url.origin + url.pathname.replace(/\/$/, '') + url.search; }
+  catch { return address; }
+}
 function renderQuickSites() {
   $('quick').replaceChildren();
   [['Gmail',t('電子郵件'),'https://mail.google.com','M'],['Notion',t('筆記與文件'),'https://www.notion.so','N'],['ChatGPT',t('對話與搜尋'),'https://chatgpt.com','C'],['YouTube',t('影片與音樂'),'https://www.youtube.com','▶']].forEach(([name, description, address, mark]) => {
-    const element = button('', () => send('add', {address}), 'quick');
-    element.setAttribute('aria-label', t('加入 {name}', {name}));
+    const existing = snapshot?.settings.pads.find(pad => canonicalSite(pad.url) === canonicalSite(address));
+    const element = button('', () => existing ? send('select', {id:existing.id}) : send('add', {address}), 'quick');
+    element.disabled = !existing && (snapshot?.settings.pads.length || 0) >= MAX_SITES;
+    element.setAttribute('aria-label', existing ? t('開啟 {name}', {name}) : t('加入 {name}', {name}));
+    element.title = existing ? t('已加入') : element.disabled ? t('已達 20 個網站上限') : t('加入 {name}', {name});
     const copy = text('div', '', 'quick-copy');
-    copy.append(text('strong', name), text('small', description));
-    element.append(text('span', mark, 'quick-logo'), copy, text('span', '+', 'quick-add'));
+    copy.append(text('strong', name), text('small', existing ? t('已加入') : description));
+    element.append(text('span', mark, 'quick-logo'), copy, text('span', existing ? '✓' : '+', 'quick-add'));
     $('quick').append(element);
   });
 }
@@ -542,6 +737,19 @@ renderQuickSites();
 $('app-version').textContent = APP_VERSION;
 // Cmd 快捷鍵由原生選單統一處理，避免同一個按鍵重複送出命令。
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') overlayMode ? dismiss() : send('hide');
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    overlayMode ? dismiss() : send('hide');
+  }
+  if (event.key === 'Tab' && overlayMode) {
+    const controls = Array.from($('overlay').querySelectorAll('button, input, select, [tabindex]'))
+      .filter(element => !element.disabled && element.tabIndex >= 0 && !element.closest('[hidden]'));
+    const first = controls[0];
+    const last = controls.at(-1);
+    const active = document.activeElement;
+    if (!controls.length) { event.preventDefault(); $('overlay').focus(); }
+    else if (event.shiftKey && (active === first || !controls.includes(active))) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && (active === last || !controls.includes(active))) { event.preventDefault(); first.focus(); }
+  }
 });
 send('ready');

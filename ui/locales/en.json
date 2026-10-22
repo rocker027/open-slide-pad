@@ -77,7 +77,7 @@
   "跟隨螢幕可用高度": "Use the available screen height",
   "目前 {height} pt · 拖曳邊緣或下角調整": "{height} pt · Drag an edge or corner to resize",
   "恢復全高": "Use full height",
-  "快捷鍵": "Keyboard shortcut",
+  "快捷鍵": "Shortcuts",
   "管理網站 · {count} / 20": "Manage sites · {count} / 20",
   "尚未加入網站，按左側 ＋ 開始。": "No sites yet. Use + in the sidebar to add one.",
   "用箭頭調整順序，按編輯重新命名。移除後可在下方復原最近一個捷徑；登入資料不受影響。": "Use arrows to reorder and Edit to rename. Undo restores the last removed shortcut; sign-in data stays intact.",
@@ -192,5 +192,18 @@
   "無法讀取 Chrome 書籤：{path}": "Could not read Chrome bookmarks: {path}",
   "無法列出 Chrome 使用者資料目錄": "Could not list the Chrome user data folder",
   "檔案超過 {size} MiB": "The file is larger than {size} MiB",
-  "書籤檔不是有效的 JSON": "The bookmark file is not valid JSON"
+  "書籤檔不是有效的 JSON": "The bookmark file is not valid JSON",
+  "搜尋網站": "Search sites",
+  "搜尋名稱或網址": "Search by name or URL",
+  "管理網站": "Manage sites",
+  "找不到符合的網站": "No matching sites",
+  "已達 20 個網站上限": "20-site limit reached",
+  "已達 20 個網站上限。請先到管理網站移除不需要的網站。": "You have reached the 20-site limit. Remove a site in Manage sites to make room.",
+  "設定分類": "Settings sections",
+  "一般": "General",
+  "← 返回首頁": "← Back to home",
+  "其中 {count} 個已選書籤不在目前篩選結果中。": "{count} selected bookmarks are hidden by this filter.",
+  "找不到符合的書籤，請試試其他名稱或網址。": "No matching bookmarks. Try another name or URL.",
+  "尚未加入網站，按上方「新增網站」開始。": "No sites yet. Choose Add site above to get started.",
+  " · 隱藏 {count}": " · {count} hidden"
 }
