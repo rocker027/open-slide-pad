@@ -40,6 +40,11 @@ function armToastTimer() {
 window.showToast = message => {
   $('toast-text').textContent = message;
   $('toast').hidden = false;
+  const feedback = $('form-feedback');
+  if (feedback) {
+    feedback.textContent = message;
+    feedback.hidden = false;
+  }
   armToastTimer();
 };
 function setBackgroundInert(inert) {
@@ -109,19 +114,34 @@ function submitRow(label) {
   actions.append(submit);
   return actions;
 }
+function formFeedback(input) {
+  const feedback = text('p', '', 'inline-feedback');
+  feedback.id = 'form-feedback';
+  feedback.hidden = true;
+  feedback.setAttribute('role', 'status');
+  input.setAttribute('aria-describedby', feedback.id);
+  input.addEventListener('input', () => { feedback.hidden = true; });
+  return feedback;
+}
 window.showAddForm = () => {
+  const fromSettings = overlayMode === 'settings';
   const element = overlay(t('新增網站'), 'add');
   if ((snapshot?.settings.pads.length || 0) >= MAX_SITES) {
     element.append(text('p', t('已達 20 個網站上限。請先到管理網站移除不需要的網站。'), 'hint'),
       button(t('管理網站'), () => window.showSettings('sites'), 'primary'));
     return;
   }
-  element.append(text('p', t('加入後，可從左側或首頁直接開啟。'), 'hint'));
+  element.append(text('p', t('貼上網站網址，加入後會立刻開啟。下次可從首頁找到。'), 'hint'));
   const form = document.createElement('form');
   const {fieldLabel, input} = inputField('new-address', t('網址或搜尋內容'));
-  input.placeholder = t('例如 notion.so');
+  input.placeholder = t('例如 youtube.com');
+  const actions = submitRow(t('加入並開啟'));
+  const cancel = button(fromSettings ? t('返回管理網站') : t('取消'),
+    () => fromSettings ? window.showSettings('sites') : dismiss(), 'pill form-cancel');
+  cancel.id = 'add-cancel';
+  actions.prepend(cancel);
   form.append(fieldLabel, input,
-    text('p', t('也可以輸入關鍵字，用 DuckDuckGo 搜尋。'), 'hint'), submitRow(t('加入側欄')));
+    text('p', t('沒有網址？輸入關鍵字，會加入並開啟 DuckDuckGo 搜尋結果。'), 'hint'), formFeedback(input), actions);
   form.onsubmit = event => {
     event.preventDefault();
     send('add', {address:input.value});
@@ -137,7 +157,7 @@ function editPad(pad) {
   const count = text('p', '', 'hint');
   input.oninput = () => { count.textContent = t('{count} / 80 字', {count:Array.from(input.value.trim()).length}); };
   input.oninput();
-  form.append(fieldLabel, input, count, text('p', pad.url, 'hint address-hint'), submitRow(t('儲存名稱')));
+  form.append(fieldLabel, input, count, text('p', pad.url, 'hint address-hint'), formFeedback(input), submitRow(t('儲存名稱')));
   form.onsubmit = event => {
     event.preventDefault();
     send('rename', {id:pad.id, title:input.value});
@@ -234,13 +254,14 @@ window.showImport = ({entries, remaining}) => {
   const actions = submitRow(t('加入所選'));
   actions.lastChild.id = 'import-submit';
   const refresh = bindImportLimit(rows, entries, remaining, counter, actions.lastChild, hiddenCount);
+  actions.prepend(back);
   bindImportFilter(input, rows, entries, empty, refresh);
   form.onsubmit = event => {
     event.preventDefault();
     send('import', {indices:selectedIndices(rows)});
   };
   form.append(fieldLabel, input, counter, results, actions);
-  element.append(form, back);
+  element.append(form);
   input.focus();
 };
 function row(title, description, control) {
@@ -281,9 +302,9 @@ function padRow(pad, index, total) {
   down.disabled = index === total - 1;
   up.setAttribute('aria-label', t('將 {name} 向上移', {name:pad.title}));
   down.setAttribute('aria-label', t('將 {name} 向下移', {name:pad.title}));
-  const rename = button(t('編輯'), () => editPad(pad), 'mini-button');
+  const rename = button(t('重新命名'), () => editPad(pad), 'mini-button');
   rename.setAttribute('aria-label', t('重新命名 {name}', {name:pad.title}));
-  const remove = button('✕', () => send('remove', {id:pad.id}), 'mini-button danger');
+  const remove = button(t('移除'), () => send('remove', {id:pad.id}), 'mini-button danger');
   [[up, 'up'], [down, 'down'], [rename, 'rename'], [remove, 'remove']].forEach(([control, name]) => { control.id = `site-${pad.id}-${name}`; });
   remove.setAttribute('aria-label', t('移除 {name}', {name:pad.title}));
   actions.append(up, down, rename, remove);
@@ -383,6 +404,7 @@ function captureSettingsView() {
   return {
     draft, recorder:$('shortcut-recorder').value,
     sourceShortcut:JSON.stringify(snapshot.settings.toggle_shortcut),
+    moreOpen:Boolean($('more-settings')?.open),
     focusId:$('overlay').contains(active) ? active.id : null,
     scrollTop:$('overlay').scrollTop,
   };
@@ -438,13 +460,14 @@ function restoreSettingsView() {
     $(`settings-tab-${settingsSection}`).focus();
     return;
   }
+  $('more-settings').open = settingsView.moreOpen;
   // 只有快捷鍵本身成功改變才採用新值；其他偏好更新不能沖掉未套用草稿。
   if (settingsView.sourceShortcut === JSON.stringify(snapshot.settings.toggle_shortcut)) {
     fillShortcutDraft(settingsView.draft);
     $('shortcut-recorder').value = settingsView.recorder;
   }
   const active = $(settingsView.focusId);
-  if (active && !active.disabled && !active.closest('[hidden]')) active.focus();
+  if (active && !active.disabled && active.getClientRects().length) active.focus();
   else if (settingsView.focusId !== null) $(`settings-tab-${settingsSection}`).focus();
   $('overlay').scrollTop = settingsView.scrollTop;
 }
@@ -458,6 +481,7 @@ function renderSettings(element) {
   const sites = settingsPanel('sites');
   const shortcutsPanel = settingsPanel('shortcuts');
   element.append(settingsNavigation(), general, sites, shortcutsPanel);
+  general.append(text('p', t('變更會自動儲存。依照你的習慣調整即可。'), 'hint'));
   const languageSelect = document.createElement('select');
   languageSelect.id = 'language-select';
   languageSelect.setAttribute('aria-label', t('介面語言'));
@@ -482,6 +506,12 @@ function renderSettings(element) {
   appearance.append(row(t('固定顯示'), t('游標移開時仍保留側欄'),
     toggle(t('固定顯示'), settings.pinned, 'pin')));
   general.append(appearance);
+  const more = text('details', '', 'more-settings');
+  more.id = 'more-settings';
+  const summary = text('summary', t('更多設定：尺寸與休眠'));
+  summary.id = 'more-settings-toggle';
+  more.append(summary);
+  general.append(more);
   const sleepSelect = document.createElement('select');
   sleepSelect.id = 'sleep-select';
   sleepSelect.setAttribute('aria-label', t('背景分頁休眠'));
@@ -496,13 +526,13 @@ function renderSettings(element) {
     sleepSelect.value = String(snapshot.settings.sleep_after_minutes ?? 15);
     send('set_sleep', {minutes});
   };
-  general.append(row(t('背景分頁休眠'), t('閒置後釋放記憶體；目前分頁保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。'), sleepSelect));
+  more.append(row(t('背景分頁休眠'), t('閒置後釋放記憶體；目前分頁保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。'), sleepSelect));
   const widthLabel = text('label', t('側欄寬度'), 'field width-label');
   widthLabel.htmlFor = 'sidebar-width';
   const widthValue = text('output', `${settings.width} pt`);
   widthValue.htmlFor = 'sidebar-width';
   widthLabel.append(widthValue);
-  general.append(widthLabel);
+  more.append(widthLabel);
   const range = document.createElement('input');
   Object.assign(range, {id:'sidebar-width', type:'range', min:'360', max:'960', step:'20', value:settings.width});
   range.setAttribute('aria-label', t('側欄寬度'));
@@ -510,7 +540,7 @@ function renderSettings(element) {
   range.onchange = () => send('width', {width:Number(range.value)});
   const fullHeight = button(t('恢復全高'), () => send('full_height'));
   fullHeight.id = 'full-height';
-  general.append(range, row(t('視窗高度'), settings.height === null ? t('跟隨螢幕可用高度') : t('目前 {height} pt · 拖曳邊緣或下角調整', {height:Math.round(settings.height)}), fullHeight));
+  more.append(range, row(t('視窗高度'), settings.height === null ? t('跟隨螢幕可用高度') : t('目前 {height} pt · 拖曳邊緣或下角調整', {height:Math.round(settings.height)}), fullHeight));
   shortcutsPanel.append(shortcutEditor());
   sites.append(text('h3', t('管理網站 · {count} / 20', {count:settings.pads.length}), 'section-title'));
   const siteActions = text('div', '', 'site-management-actions');
@@ -524,7 +554,7 @@ function renderSettings(element) {
   sites.append(siteActions);
   settings.pads.forEach((pad, index) => sites.append(padRow(pad, index, settings.pads.length)));
   if (!settings.pads.length) sites.append(text('p', t('尚未加入網站，按上方「新增網站」開始。'), 'hint'));
-  sites.append(text('p', t('用箭頭調整順序，按編輯重新命名。移除後可在下方復原最近一個捷徑；登入資料不受影響。'), 'hint'));
+  sites.append(text('p', t('用箭頭調整順序。移除後可在這裡復原最近一個網站；登入資料不受影響。'), 'hint'));
   // 對話框開啟時背景是 inert，復原必須在管理區也有入口。
   if (snapshot.undo_title) {
     const undo = button(t('復原「{name}」', {name:snapshot.undo_title}), () => send('undo_remove'), 'pill');
@@ -582,6 +612,22 @@ function filterHomePads() {
     if (!hidden) visible += 1;
   });
   $('site-no-results').hidden = !snapshot?.settings.pads.length || visible > 0;
+}
+function renderHomeGuidance(state) {
+  const settings = state.settings;
+  const empty = settings.pads.length === 0;
+  $('home-title').textContent = empty ? t('加入你的第一個網站') : t('我的網站');
+  $('home-lead').textContent = empty ? t('把常用網站放在這裡，隨時打開。') : t('點一下網站就能開啟。');
+  $('site-count').hidden = empty;
+  $('site-limit').hidden = settings.pads.length < MAX_SITES;
+  $('site-limit').textContent = t('已加入 20 個網站。要加入新的，請先到「管理網站」移除一個。');
+  $('home-open-help').textContent = settings.hot_edge
+    ? (settings.side === 'left' ? t('移到螢幕左邊緣，就能再次打開。') : t('移到螢幕右邊緣，就能再次打開。'))
+    : t('邊緣開啟已關閉。點選單列的 Open Slide Pad 圖示即可打開。');
+  $('home-hide-help').textContent = settings.pinned
+    ? t('目前固定顯示，游標移開也不會收起。') : t('游標移開會自動收起。想讓側欄留在畫面上，可以固定顯示。');
+  $('home-pin').textContent = settings.pinned ? t('取消固定顯示') : t('固定顯示側欄');
+  $('home-pin').setAttribute('aria-pressed', String(settings.pinned));
 }
 function renderPads(state) {
   $('pads').replaceChildren();
@@ -652,6 +698,7 @@ window.render = state => {
   document.documentElement.dataset.side = settings.side;
   if (settingsChanged || homeChanged || sleepingChanged) renderPads(state);
   if (settingsChanged) renderHomePads(settings.pads);
+  if (settingsChanged || languageChanged) renderHomeGuidance(state);
   if (settingsChanged || languageChanged) renderQuickSites();
   const full = settings.pads.length >= MAX_SITES;
   $('add').disabled = $('hero-add').disabled = full;
@@ -692,6 +739,12 @@ $('manage-sites').onclick = () => {
   send('show_settings');
 };
 $('site-filter').oninput = filterHomePads;
+$('clear-site-filter').onclick = () => {
+  $('site-filter').value = '';
+  filterHomePads();
+  $('site-filter').focus();
+};
+$('home-pin').onclick = () => send('pin');
 $('toast-close').onclick = hideToast;
 // 滑鼠停在提示上時不倒數，避免訊息還沒讀完就消失。
 $('toast').onmouseenter = () => clearTimeout(toastTimer);
@@ -727,7 +780,7 @@ function renderQuickSites() {
     element.setAttribute('aria-label', existing ? t('開啟 {name}', {name}) : t('加入 {name}', {name}));
     element.title = existing ? t('已加入') : element.disabled ? t('已達 20 個網站上限') : t('加入 {name}', {name});
     const copy = text('div', '', 'quick-copy');
-    copy.append(text('strong', name), text('small', existing ? t('已加入') : description));
+    copy.append(text('strong', name), text('small', existing ? t('已加入 · 點一下開啟') : description));
     element.append(text('span', mark, 'quick-logo'), copy, text('span', existing ? '✓' : '+', 'quick-add'));
     $('quick').append(element);
   });
@@ -742,8 +795,8 @@ document.addEventListener('keydown', event => {
     overlayMode ? dismiss() : send('hide');
   }
   if (event.key === 'Tab' && overlayMode) {
-    const controls = Array.from($('overlay').querySelectorAll('button, input, select, [tabindex]'))
-      .filter(element => !element.disabled && element.tabIndex >= 0 && !element.closest('[hidden]'));
+    const controls = Array.from($('overlay').querySelectorAll('button, input, select, summary, [tabindex]'))
+      .filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
     const first = controls[0];
     const last = controls.at(-1);
     const active = document.activeElement;

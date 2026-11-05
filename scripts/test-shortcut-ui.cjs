@@ -52,7 +52,7 @@ class Element {
   constructor(tag) {
     this.tagName=tag.toUpperCase(); this.nodeType=tag==='#text'?3:1; this.childNodes=[];
     this.attributes={}; this.dataset={}; this.style={}; this._listeners=new Map();
-    this.className=''; this.hidden=false; this.disabled=false; this.inert=false; this.checked=false;
+    this.className=''; this.hidden=false; this.disabled=false; this.inert=false; this.checked=false; this.open=false;
     this.value=''; this.scrollTop=0; this.selectionStart=0; this.selectionEnd=0;
     this._tabIndex=undefined;
     this.classList={contains:name=>this.className.split(/\s+/).includes(name),toggle:(name,force)=>{
@@ -62,7 +62,7 @@ class Element {
     },add:name=>this.classList.toggle(name,true),remove:name=>this.classList.toggle(name,false)};
   }
   set tabIndex(value) { this._tabIndex=Number(value); this.attributes.tabindex=String(value); }
-  get tabIndex() { return this._tabIndex??(['BUTTON','INPUT','SELECT','TEXTAREA'].includes(this.tagName)?0:-1); }
+  get tabIndex() { return this._tabIndex??(['BUTTON','INPUT','SELECT','TEXTAREA','SUMMARY'].includes(this.tagName)?0:-1); }
   set id(id) { this._id=id; ids.set(id,this); this.attributes.id=id; }
   get id() { return this._id||''; }
   get children() { return this.childNodes.filter(child=>child.nodeType===1); }
@@ -96,7 +96,16 @@ class Element {
   closest(selector) { return this.matches(selector)?this:this.parent?.closest(selector)||null; }
   querySelectorAll(selector) { return this.children.flatMap(child=>[...(child.matches(selector)?[child]:[]),...child.querySelectorAll(selector)]); }
   querySelector(selector) { return this.querySelectorAll(selector)[0]||null; }
-  getClientRects() { return this.isConnected && !this.closest('[hidden]')?[{}]:[]; }
+  getClientRects() {
+    if(!this.isConnected || this.closest('[hidden]'))return [];
+    for(let ancestor=this.parent;ancestor;ancestor=ancestor.parent) {
+      if(ancestor.tagName==='DETAILS'&&!ancestor.open) {
+        const summary=ancestor.children.find(child=>child.tagName==='SUMMARY');
+        if(!summary?.contains(this))return [];
+      }
+    }
+    return [{}];
+  }
   remove() {
     if(this.contains(document?.activeElement))document.activeElement=document.body;
     if(this.parent)this.parent.childNodes.splice(this.parent.childNodes.indexOf(this),1);
@@ -117,7 +126,7 @@ class Element {
     return !value.defaultPrevented;
   }
   focus() {
-    if(this.disabled || !this.isConnected || this.closest('[hidden],[inert]'))return;
+    if(this.disabled || !this.getClientRects().length || this.closest('[inert]'))return;
     const previous=document.activeElement;
     if(previous===this)return;
     document.activeElement=this;
@@ -129,7 +138,11 @@ class Element {
   select() { this.selectionStart=0; this.selectionEnd=this.value.length; }
   setSelectionRange(start,end) { this.selectionStart=start; this.selectionEnd=end; }
   blur() { if(document.activeElement===this)document.body.focus(); }
-  click() { if(!this.disabled&&!this.closest('[hidden],[inert]'))this.dispatchEvent(event('click')); }
+  click() {
+    if(this.disabled || !this.getClientRects().length || this.closest('[inert]'))return;
+    const proceed=this.dispatchEvent(event('click'));
+    if(proceed && this.tagName==='SUMMARY' && this.parent?.tagName==='DETAILS')this.parent.open=!this.parent.open;
+  }
 }
 document={documentElement:{dataset:{}},createElement:tag=>new Element(tag),createTextNode:value=>Object.assign(new Element('#text'),{textContent:value}),
   getElementById:id=>{const element=ids.get(id);return element?.isConnected?element:null;},
@@ -218,6 +231,7 @@ console.log('PASS sidebar context menu targets the clicked tab and preserves lef
 // 设置只在保存回覆后显示新值；休眠状态变化必须独立刷新分页标记。
 ctx.window.showSettings();
 settingsTab('general');
+document.getElementById('more-settings-toggle').click();
 assert.equal(document.getElementById('sleep-select').value,'15');
 document.getElementById('sleep-select').value='30';
 document.getElementById('sleep-select').onchange();
@@ -497,7 +511,7 @@ assert.equal(dialog.getAttribute('role'),'dialog');
 assert.equal(dialog.getAttribute('aria-modal'),'true');
 assert.equal(document.activeElement.id,'settings-tab-general','設定開啟時聚焦第一個分區，讓鍵盤可立即選擇設定');
 for(const selector of ['.rail','.toolbar','.stage','.status'])assert.equal(document.querySelector(selector).inert,true,`${selector} 在 dialog 開啟時應 inert`);
-const focusable=dialog.querySelectorAll('button,input,select,textarea,a[href],[tabindex]').filter(element=>!element.disabled&&element.tabIndex!==-1&&element.getClientRects().length);
+const focusable=dialog.querySelectorAll('button,input,select,textarea,summary,a[href],[tabindex]').filter(element=>!element.disabled&&element.tabIndex!==-1&&element.getClientRects().length);
 assert.ok(focusable.length>1);
 focusable.at(-1).focus();
 const wrap=event('keydown',{key:'Tab',shiftKey:false});
@@ -540,7 +554,9 @@ siteFilter.value='no-such-site'; siteFilter.dispatchEvent(event('input'));
 assert.equal(document.getElementById('site-no-results').hidden,false);
 assert.equal(document.getElementById('empty-state').hidden,true,'沒有搜尋結果不等同沒有網站');
 assert.equal(document.getElementById('saved-sites').children.length,2,'篩選不可刪掉網站列');
-siteFilter.value=''; siteFilter.dispatchEvent(event('input'));
+document.getElementById('clear-site-filter').click();
+assert.equal(siteFilter.value,'','清除搜尋按鈕清空篩選文字');
+assert.equal(document.activeElement,siteFilter,'清除搜尋後可直接重新輸入');
 assert.equal(document.getElementById('site-no-results').hidden,true);
 assert.deepEqual(document.getElementById('saved-sites').children.map(row=>row.hidden),[false,false]);
 ctx.window.render(state);
@@ -551,6 +567,7 @@ console.log('PASS home search matches titles and URLs and distinguishes no match
 // 加入上限與快捷推薦使用相同規則；canonical URL 已存在時直接選取。
 const popular={...state,settings:{...state.settings,pads:[{id:88,title:'Mail',url:'https://mail.google.com/'}]}};
 ctx.window.render(popular);
+document.getElementById('suggestions').open=true;
 let mail=find(document.getElementById('quick'),'Gmail').closest('button');
 mail.click();
 assert.deepEqual(sent.at(-1),{action:'select',id:88},'已加入的推薦不重複 add');
@@ -558,6 +575,8 @@ const full={...state,settings:{...state.settings,pads:[...popular.settings.pads,
 ctx.window.render(full);
 assert.equal(document.getElementById('add').disabled,true);
 assert.equal(document.getElementById('hero-add').disabled,true);
+assert.equal(document.getElementById('site-limit').hidden,false);
+assert.match(document.getElementById('site-limit').textContent,/20 sites.*remove one in Manage sites/,'滿額說明須提供可用的處理方法');
 mail=find(document.getElementById('quick'),'Gmail').closest('button');
 assert.equal(mail.disabled,false,'滿額仍可開啟已加入網站');
 assert.equal(find(document.getElementById('quick'),'Notion').closest('button').disabled,true,'滿額禁用新網站推薦');
@@ -568,6 +587,7 @@ ctx.window.closeOverlay();
 ctx.window.render(populated);
 assert.equal(document.getElementById('add').disabled,false);
 assert.equal(document.getElementById('hero-add').disabled,false);
+assert.equal(document.getElementById('site-limit').hidden,true,'移除網站後收起上限提示');
 assert.equal(document.getElementById('reload').disabled,true,'首頁不可重新整理隱藏中的 active 網站');
 assert.equal(document.getElementById('external').disabled,true,'首頁不可外開隱藏中的 active 網站');
 ctx.window.render({...page,settings:{...page.settings,active:7}});
@@ -627,6 +647,7 @@ ctx.window.closeOverlay();
 let focusAckState={...state,settings:{...state.settings,height:540}};
 ctx.window.render(focusAckState);
 ctx.window.showSettings('general');
+document.getElementById('more-settings-toggle').click();
 document.getElementById('full-height').focus();
 document.getElementById('full-height').click();
 assert.deepEqual(sent.at(-1),{action:'full_height'});
@@ -664,3 +685,129 @@ ctx.window.render({...focusAckState,undo_title:null,settings:{...focusAckState.s
 assert.equal(document.getElementById('settings-undo'),null,'復原成功後移除已完成的操作');
 assert.equal(document.activeElement.id,'settings-tab-sites','復原按鈕消失時焦點退回網站分區，不掉到 body');
 console.log('PASS settings acknowledgement preserves action focus and falls back when undo disappears');
+
+// 首頁提示描述目前的設定，不把預設的右側、自動收合當成固定行為。
+ctx.window.closeOverlay();
+for(const side of ['left','right']) {
+  ctx.window.render({...state,settings:{...state.settings,side}});
+  assert.equal(document.getElementById('home-open-help').textContent,`Move to the ${side} edge of your screen to open the sidebar again.`);
+  assert.match(document.getElementById('home-hide-help').textContent,/hides when you move away/);
+  assert.equal(document.getElementById('home-pin').getAttribute('aria-pressed'),'false');
+  assert.equal(document.getElementById('home-pin').textContent,'Keep sidebar open');
+}
+document.getElementById('home-pin').click();
+assert.deepEqual(sent.at(-1),{action:'pin'});
+assert.equal(document.getElementById('home-pin').getAttribute('aria-pressed'),'false','保存回覆前固定顯示仍反映目前狀態');
+ctx.window.render({...state,settings:{...state.settings,hot_edge:false,pinned:true}});
+assert.equal(document.getElementById('home-open-help').textContent,'Edge opening is off. Click the Open Slide Pad menu bar icon to open the sidebar.');
+assert.equal(document.getElementById('home-hide-help').textContent,'The sidebar stays open, even when you move away.');
+assert.equal(document.getElementById('home-pin').getAttribute('aria-pressed'),'true');
+assert.equal(document.getElementById('home-pin').textContent,'Allow auto-hide');
+document.getElementById('home-pin').click();
+assert.deepEqual(sent.at(-1),{action:'pin'});
+ctx.window.render({...state,settings:{...state.settings,language:'zh-TW',side:'left',pinned:true}});
+assert.equal(document.getElementById('home-open-help').textContent,'移到螢幕左邊緣，就能再次打開。');
+assert.equal(document.getElementById('home-hide-help').textContent,'目前固定顯示，游標移開也不會收起。');
+assert.equal(document.getElementById('home-pin').textContent,'取消固定顯示');
+console.log('PASS home guidance follows edge, side and pin settings with acknowledged state and bilingual copy');
+
+// 新增與取消都保留入口脈絡；表單旁的回饋不跟著短暫提示消失。
+ctx.window.render(state);
+document.getElementById('hero-add').focus();
+document.getElementById('hero-add').click();
+assert.deepEqual(sent.at(-1),{action:'new_pad'});
+ctx.window.showAddForm();
+assert.equal(document.getElementById('add-cancel').textContent,'Cancel');
+const addForm=document.getElementById('new-address').closest('form');
+assert.equal(addForm.querySelector('.primary').textContent,'Add and open');
+document.getElementById('new-address').value='youtube.com';
+addForm.dispatchEvent(event('submit'));
+assert.deepEqual(sent.at(-1),{action:'add',address:'youtube.com'});
+ctx.window.showToast('Could not save settings');
+assert.equal(document.getElementById('form-feedback').hidden,false);
+assert.equal(document.getElementById('form-feedback').textContent,'Could not save settings');
+assert.equal(document.getElementById('new-address').getAttribute('aria-describedby'),'form-feedback');
+runTimers(8000);
+assert.equal(document.getElementById('toast').hidden,true);
+assert.equal(document.getElementById('form-feedback').hidden,false,'表單回饋保留到使用者修正，不隨 toast 自動關閉');
+assert.equal(document.getElementById('new-address').value,'youtube.com','失敗保留已輸入內容');
+document.getElementById('new-address').dispatchEvent(event('input'));
+assert.equal(document.getElementById('form-feedback').hidden,true,'重新輸入後清除舊回饋');
+document.getElementById('add-cancel').click();
+assert.equal(dialog.hidden,true);
+assert.deepEqual(sent.at(-1),{action:'overlay',open:false});
+assert.equal(document.activeElement,document.getElementById('hero-add'),'從首頁取消新增回到原本入口');
+ctx.window.showSettings('sites');
+document.getElementById('settings-add-site').focus();
+document.getElementById('settings-add-site').click();
+assert.deepEqual(sent.at(-1),{action:'new_pad'});
+ctx.window.showAddForm();
+assert.equal(document.getElementById('add-cancel').textContent,'Back to manage sites');
+document.getElementById('add-cancel').click();
+assert.equal(dialog.hidden,false);
+assert.equal(document.getElementById('settings-sites').hidden,false,'從設定取消新增回到網站分區');
+assert.equal(document.activeElement.id,'settings-add-site','返回管理網站恢復新增入口焦點');
+ctx.window.render(tabState);
+document.getElementById('site-7-rename').click();
+ctx.window.showToast('Site names cannot contain control characters');
+runTimers(8000);
+assert.equal(document.getElementById('form-feedback').hidden,false,'重新命名錯誤同樣持續顯示');
+document.getElementById('pad-name').value='New name';
+document.getElementById('pad-name').dispatchEvent(event('input'));
+assert.equal(document.getElementById('form-feedback').hidden,true);
+assert.ok(find(dialog,'8 / 80 characters'),'清除回饋不能取代名稱長度提示的 input handler');
+console.log('PASS add completion label, cancellation origin and persistent add/rename feedback');
+
+// 進階設定預設收合；收合內容不可取得焦點，summary 本身仍屬 dialog 鍵盤順序。
+ctx.window.closeOverlay();
+ctx.window.render(state);
+ctx.window.showSettings('general');
+assert.equal(document.getElementById('more-settings').open,false);
+const summary=document.getElementById('more-settings-toggle');
+const hiddenSleep=document.getElementById('sleep-select');
+assert.equal(summary.tabIndex,0);
+assert.equal(summary.getClientRects().length,1);
+assert.equal(hiddenSleep.getClientRects().length,0);
+summary.focus();
+hiddenSleep.focus();
+assert.equal(document.activeElement,summary,'收合內容不可搶走焦點');
+const summaryTab=event('keydown',{key:'Tab'});
+summary.dispatchEvent(summaryTab);
+assert.equal(summaryTab.defaultPrevented,false,'summary 在焦點序列內，不應被當成 dialog 外部焦點');
+document.activeElement=hiddenSleep; // 模擬內容剛收合時仍殘留的焦點。
+const hiddenTab=event('keydown',{key:'Tab'});
+hiddenSleep.dispatchEvent(hiddenTab);
+assert.equal(hiddenTab.defaultPrevented,true,'焦點陷阱不可把收合的控制項當作可操作項目');
+assert.equal(document.activeElement.id,'overlay-close');
+settingsTab('shortcuts');
+document.getElementById('shortcut-key').value='F19';
+document.getElementById('shortcut-option').checked=true;
+settingsTab('general');
+summary.click();
+assert.equal(document.getElementById('more-settings').open,true);
+hiddenSleep.focus();
+dialog.scrollTop=137;
+ctx.window.render({...state,settings:{...state.settings,pinned:true}});
+assert.equal(document.getElementById('more-settings').open,true,'設定回覆不能收起使用者展開的內容');
+assert.equal(document.activeElement.id,'sleep-select');
+assert.equal(dialog.scrollTop,137);
+assert.equal(document.getElementById('shortcut-key').value,'F19');
+assert.equal(document.getElementById('shortcut-option').checked,true,'展開狀態更新不能沖掉另一分區的快捷鍵草稿');
+document.getElementById('more-settings-toggle').click();
+document.getElementById('more-settings-toggle').focus();
+ctx.window.render(state);
+assert.equal(document.getElementById('more-settings').open,false,'已收合狀態同樣跨重繪保存');
+assert.equal(document.activeElement.id,'more-settings-toggle');
+console.log('PASS advanced settings disclosure, hidden-control exclusion, summary focus and view/draft restoration');
+
+// 失敗頁直接提供修改網址與返回首頁，沿用既有 IPC 而不新增導覽副作用。
+ctx.window.closeOverlay();
+ctx.window.render({...page,failure:'unreachable',dismissible:false});
+document.getElementById('load-edit').click();
+assert.deepEqual(sent.at(-1),{action:'focus_address'});
+ctx.window.focusAddress();
+assert.equal(document.activeElement.id,'address');
+assert.equal(document.getElementById('address').selectionEnd,page.address.length,'修改網址入口選取完整舊網址供直接替換');
+document.getElementById('load-home').click();
+assert.deepEqual(sent.at(-1),{action:'home'});
+console.log('PASS failed-page edit-address and home recovery actions route existing IPC');
