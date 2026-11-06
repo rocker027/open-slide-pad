@@ -766,9 +766,7 @@ impl App {
             }
         }
         let mouse = native::mouse();
-        let at_edge = native::screens()
-            .iter()
-            .any(|(full, _)| full.at_edge(mouse, self.settings.side));
+        let at_edge = native::at_screen_edge(mouse, self.settings.side);
         if self.edge.update(at_edge && self.settings.hot_edge, now) && !self.visible {
             self.show(OpenedBy::Edge)?;
         }

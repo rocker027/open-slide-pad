@@ -1,7 +1,7 @@
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSEvent, NSScreen, NSWindow};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-use sliderust::panel::Frame;
+use sliderust::{model::Side, panel::Frame};
 use tao::{platform::macos::WindowExtMacOS, window::Window};
 
 pub fn mouse() -> (f64, f64) {
@@ -31,6 +31,13 @@ pub fn screens() -> Vec<(Frame, Frame)> {
         .iter()
         .map(|screen| (frame(screen.frame()), frame(screen.visibleFrame())))
         .collect()
+}
+/// 游標輪詢只需要完整螢幕邊界，不建立版面配置用的螢幕清單。
+pub fn at_screen_edge(point: (f64, f64), side: Side) -> bool {
+    let mtm = MainThreadMarker::new().expect("AppKit 必須在主執行緒");
+    NSScreen::screens(mtm)
+        .iter()
+        .any(|screen| frame(screen.frame()).at_edge(point, side))
 }
 fn window(window: &Window) -> &NSWindow {
     // Tao 擁有此 NSWindow；借用期間 Window 尚在且所有操作都在主執行緒。

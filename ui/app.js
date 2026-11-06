@@ -629,22 +629,26 @@ function renderHomeGuidance(state) {
   $('home-pin').textContent = settings.pinned ? t('取消固定顯示') : t('固定顯示側欄');
   $('home-pin').setAttribute('aria-pressed', String(settings.pinned));
 }
-function renderPads(state) {
-  $('pads').replaceChildren();
+function renderPads(state, rebuild) {
+  if (rebuild) $('pads').replaceChildren();
   state.settings.pads.forEach((pad, index) => {
-    const initial = padInitial(pad);
+    let element = rebuild ? null : $(`pad-${pad.id}`);
+    if (rebuild) {
+      element = button(padInitial(pad), () => send('select', {id:pad.id}), 'pad');
+      element.id = `pad-${pad.id}`;
+      element.oncontextmenu = event => {
+        event.preventDefault();
+        send('pad_menu', {id:pad.id});
+      };
+      $('pads').append(element);
+    }
     const selected = !state.home && state.settings.active === pad.id;
     const sleeping = state.sleeping?.includes(pad.id);
-    const element = button(initial, () => send('select', {id:pad.id}), `pad${selected ? ' active' : ''}${sleeping ? ' sleeping' : ''}`);
-    element.id = `pad-${pad.id}`;
+    element.classList.toggle('active', selected);
+    element.classList.toggle('sleeping', Boolean(sleeping));
     element.title = pad.title + (sleeping ? ` · ${t('已休眠')}` : '') + (index < 9 ? ` · ⌘${index + 1}` : '');
     element.setAttribute('aria-label', pad.title + (sleeping ? ` · ${t('已休眠')}` : ''));
     element.setAttribute('aria-pressed', String(selected));
-    element.oncontextmenu = event => {
-      event.preventDefault();
-      send('pad_menu', {id:pad.id});
-    };
-    $('pads').append(element);
   });
 }
 function setReloadMode(stoppable) {
@@ -685,10 +689,16 @@ window.render = state => {
     localizeDocument();
   }
   const settingsChanged = JSON.stringify(snapshot?.settings) !== JSON.stringify(state.settings);
+  const padsChanged = settingsChanged && JSON.stringify(snapshot?.settings.pads) !== JSON.stringify(state.settings.pads);
+  const activeChanged = snapshot?.settings.active !== state.settings.active;
   const homeChanged = snapshot?.home !== state.home;
   const sleepingChanged = JSON.stringify(snapshot?.sleeping) !== JSON.stringify(state.sleeping);
   const shortcutChanged = snapshot?.shortcut_error !== state.shortcut_error || snapshot?.shortcut_active !== state.shortcut_active;
   const undoChanged = snapshot?.undo_title !== state.undo_title;
+  const guidanceChanged = padsChanged || languageChanged
+    || snapshot?.settings.side !== state.settings.side
+    || snapshot?.settings.hot_edge !== state.settings.hot_edge
+    || snapshot?.settings.pinned !== state.settings.pinned;
   if (overlayMode === 'settings') settingsView = captureSettingsView();
   if (!snapshot || Boolean(snapshot.settings.pads.length) !== Boolean(state.settings.pads.length)) {
     $('suggestions').open = state.settings.pads.length === 0;
@@ -696,10 +706,11 @@ window.render = state => {
   snapshot = state;
   const settings = state.settings;
   document.documentElement.dataset.side = settings.side;
-  if (settingsChanged || homeChanged || sleepingChanged) renderPads(state);
-  if (settingsChanged) renderHomePads(settings.pads);
-  if (settingsChanged || languageChanged) renderHomeGuidance(state);
-  if (settingsChanged || languageChanged) renderQuickSites();
+  // 分頁狀態更新沿用按鈕，保留鍵盤焦點；網站清單變動才重建清單。
+  if (padsChanged || activeChanged || homeChanged || sleepingChanged || languageChanged) renderPads(state, padsChanged);
+  if (padsChanged || languageChanged) renderHomePads(settings.pads);
+  if (guidanceChanged) renderHomeGuidance(state);
+  if (padsChanged || languageChanged) renderQuickSites();
   const full = settings.pads.length >= MAX_SITES;
   $('add').disabled = $('hero-add').disabled = full;
   const addTitle = full ? '已達 20 個網站上限' : '新增網站 ⌘T';
@@ -718,7 +729,9 @@ window.render = state => {
   $('status').classList.toggle('loading', !state.home && state.loading);
   renderLoadState(state);
   const label = state.home ? t('首頁') : state.failure ? t('載入失敗') : state.loading ? t('正在載入…') : state.title || t('準備就緒');
-  $('status-text').replaceChildren(text('i', '', 'dot'), document.createTextNode(label));
+  if ($('status-text').textContent !== label) {
+    $('status-text').replaceChildren(text('i', '', 'dot'), document.createTextNode(label));
+  }
   $('undo-remove').hidden = !state.undo_title;
   $('undo-remove').title = state.undo_title ? t('復原「{name}」', {name:state.undo_title}) : '';
   $('status-shortcut').hidden = state.home || Boolean(state.undo_title);
