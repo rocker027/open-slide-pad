@@ -112,6 +112,98 @@ mod tests {
     use crate::i18n::Language;
 
     #[test]
+    fn sleep_when_hidden_survives_restart_and_preserves_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::open(dir.path()).unwrap();
+        assert!(!store.load().unwrap().sleep_when_hidden);
+        let mut original = Settings::default().add("example.com").unwrap();
+        original.unknown_fields.insert(
+            "future_feature".into(),
+            serde_json::json!({"value": [1, 2]}),
+        );
+        store.save(&original).unwrap();
+        let legacy = fs::read(&path).unwrap();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&legacy)
+                .unwrap()
+                .get("sleep_when_hidden")
+                .is_none()
+        );
+        assert_eq!(store.load().unwrap(), original);
+        assert_eq!(fs::read(&path).unwrap(), legacy, "讀取舊設定不應改寫檔案");
+
+        let enabled = Settings {
+            sleep_when_hidden: true,
+            ..original.clone()
+        };
+        store.save(&enabled).unwrap();
+        drop(store);
+        let reopened = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(reopened.load().unwrap(), enabled);
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["sleep_when_hidden"], true);
+        assert_eq!(
+            saved["future_feature"],
+            serde_json::json!({"value": [1, 2]})
+        );
+        assert_eq!(saved["version"], 1);
+
+        reopened.save(&original).unwrap();
+        drop(reopened);
+        assert_eq!(
+            SettingsStore::open(dir.path()).unwrap().load().unwrap(),
+            original
+        );
+        assert_eq!(fs::read(&path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn malformed_sleep_when_hidden_preserves_source_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::open(dir.path()).unwrap();
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut value = serde_json::to_value(Settings::default()).unwrap();
+            value["sleep_when_hidden"] = invalid;
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(store.load().is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn failed_save_preserves_previous_sleep_when_hidden_preference() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::open(dir.path()).unwrap();
+        for enabled in [false, true] {
+            let original = Settings {
+                sleep_when_hidden: enabled,
+                ..Settings::default()
+            };
+            store.save(&original).unwrap();
+            let saved = fs::read(&path).unwrap();
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+            let result = store.save(&Settings {
+                sleep_when_hidden: !enabled,
+                ..original.clone()
+            });
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(result.is_err());
+            assert_eq!(store.load().unwrap(), original);
+            assert_eq!(fs::read(&path).unwrap(), saved);
+        }
+    }
+
+    #[test]
     fn language_defaults_to_english_and_round_trips_without_changing_existing_preferences() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");

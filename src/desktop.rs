@@ -305,6 +305,7 @@ impl App {
             return;
         }
         self.visible = false;
+        self.update_sleep_timers(Instant::now());
         self.animation = Some((Instant::now(), false));
         self.overlay = false;
         self.edge.reset_until_leave();
@@ -352,14 +353,12 @@ impl App {
         if !self.home
             && !self.overlay
             && let Some(id) = self.settings.active
+            && self.keeps_pad_awake(id)
             && !self.pads.contains_key(&id)
         {
             self.wake_pad(id)?;
         }
-        let now = Instant::now();
-        for (id, pad) in &mut self.pads {
-            pad.sleep.update(self.settings.active == Some(*id), now);
-        }
+        self.update_sleep_timers(Instant::now());
         for (id, pad) in &self.pads {
             // 失敗畫面畫在控制面板上；原生網頁視圖永遠蓋在 HTML 上面，所以要先藏起來。
             let shown = !self.home
@@ -469,6 +468,12 @@ impl App {
             Command::SetSleep { minutes } => {
                 self.commit(Settings {
                     sleep_after_minutes: minutes,
+                    ..self.settings.clone()
+                })?;
+            }
+            Command::SetSleepWhenHidden { enabled } => {
+                self.commit(Settings {
+                    sleep_when_hidden: enabled,
                     ..self.settings.clone()
                 })?;
             }
@@ -618,11 +623,13 @@ impl App {
         Ok(())
     }
     fn focus_chrome(&mut self, script: &str, overlay: bool) -> Result<()> {
+        // 先標記覆蓋畫面，避免只開啟設定時先重建已休眠的目前網站。
+        self.overlay = overlay;
         if !self.visible {
             self.show(OpenedBy::Request)?;
+        } else {
+            self.sync_views()?;
         }
-        self.overlay = overlay;
-        self.sync_views()?;
         self.chrome.focus()?;
         self.chrome.evaluate_script(script)?;
         Ok(())

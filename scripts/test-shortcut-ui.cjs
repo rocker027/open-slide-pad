@@ -250,6 +250,78 @@ ctx.window.render({...tabState,sleeping:[]});
 assert.doesNotMatch(document.getElementById('pads').children[1].className,/sleeping/);
 ctx.window.render(state);
 console.log('PASS sleep setting awaits persistence and tab sleep markers refresh independently');
+
+// 收起休眠沿用已保存設定，開關與焦點都等保存回覆才更新。
+for (const selectedLanguage of ['en','zh-TW']) {
+  const label = selectedLanguage === 'en' ? 'Sleep when hidden' : '收起後也休眠';
+  const prerequisite = selectedLanguage === 'en'
+    ? 'Choose a sleep duration first to change this setting.' : '請先選擇休眠時間，才能調整此設定。';
+  const description = selectedLanguage === 'en'
+    ? 'When the sidebar is hidden, the current site also sleeps after the duration above. Reopening the sidebar reloads the page. Playback, live connections and unsaved input may not be preserved. Cookies are kept.'
+    : '側欄收起後，目前網站也會依上方時間休眠。重新開啟側欄時會重新載入。播放、即時連線與未提交的輸入可能無法保留，cookies 會保留。';
+  let hiddenSleepState = {...state,settings:{...state.settings,language:selectedLanguage}};
+  ctx.window.render(hiddenSleepState);
+  ctx.window.showSettings('general');
+  if (!document.getElementById('more-settings').open) document.getElementById('more-settings-toggle').click();
+  const sleepToggle = () => document.getElementById('setting-set_sleep_when_hidden');
+  assert.equal(sleepToggle().getAttribute('role'),'switch');
+  assert.equal(sleepToggle().getAttribute('aria-label'),label);
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'false','舊設定缺欄位時預設關閉');
+  assert.equal(sleepToggle().disabled,false,'預設 15 分鐘可調整收起休眠');
+  assert.ok(find(document.getElementById('more-settings'),description));
+  sleepToggle().focus();
+  sleepToggle().click();
+  assert.deepEqual(sent.at(-1),{action:'set_sleep_when_hidden',enabled:true});
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'false','等待保存回覆時不可樂觀開啟');
+  ctx.window.showToast(selectedLanguage === 'en' ? 'Could not save settings' : '無法保存設定');
+  ctx.window.render(hiddenSleepState);
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'false','保存失敗保留原設定');
+  assert.equal(document.activeElement,sleepToggle(),'保存失敗保留開關焦點');
+  const beforeHiddenSleepAck = sent.length;
+  hiddenSleepState = {...hiddenSleepState,settings:{...hiddenSleepState.settings,sleep_when_hidden:true}};
+  ctx.window.render(hiddenSleepState);
+  assert.equal(sent.length,beforeHiddenSleepAck,'保存回覆不應再送出設定命令');
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'true');
+  assert.equal(document.activeElement,sleepToggle(),'保存成功後保留開關焦點');
+  assert.equal(document.getElementById('more-settings').open,true,'保存回覆後保留展開狀態');
+  sleepToggle().click();
+  assert.deepEqual(sent.at(-1),{action:'set_sleep_when_hidden',enabled:false});
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'true','等待關閉回覆時仍顯示原設定');
+  ctx.window.render(hiddenSleepState);
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'true','關閉保存失敗仍保留開啟狀態');
+  assert.equal(document.activeElement,sleepToggle());
+  hiddenSleepState = {...hiddenSleepState,settings:{...hiddenSleepState.settings,sleep_when_hidden:false}};
+  ctx.window.render(hiddenSleepState);
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'false');
+  assert.equal(document.activeElement,sleepToggle());
+
+  for (const savedPreference of [false,true]) {
+    hiddenSleepState = {...hiddenSleepState,settings:{...hiddenSleepState.settings,sleep_when_hidden:savedPreference,sleep_after_minutes:0}};
+    ctx.window.render(hiddenSleepState);
+    assert.equal(sleepToggle().getAttribute('aria-checked'),String(savedPreference),'停用時間仍顯示已保存偏好');
+    assert.equal(sleepToggle().disabled,true);
+    assert.ok(find(document.getElementById('more-settings'),`${prerequisite} ${description}`));
+    const beforeDisabledClick = sent.length;
+    sleepToggle().click();
+    assert.equal(sent.length,beforeDisabledClick,'停用的開關不可送出設定命令');
+  }
+  assert.equal(document.activeElement.id,'settings-tab-general','原焦點控制停用時回到目前分區標籤');
+  const duration = document.getElementById('sleep-select');
+  duration.focus();
+  duration.value='30';
+  duration.onchange();
+  assert.deepEqual(sent.at(-1),{action:'set_sleep',minutes:30},'仍使用原有休眠時間命令');
+  assert.equal(duration.value,'0','休眠時間也等待保存回覆');
+  assert.equal(sleepToggle().disabled,true,'選擇時間尚未保存前開關仍停用');
+  hiddenSleepState = {...hiddenSleepState,settings:{...hiddenSleepState.settings,sleep_after_minutes:30}};
+  ctx.window.render(hiddenSleepState);
+  assert.equal(sleepToggle().disabled,false);
+  assert.equal(sleepToggle().getAttribute('aria-checked'),'true','恢復時間後沿用已保存偏好');
+  assert.equal(document.getElementById('sleep-select').value,'30');
+  assert.equal(document.activeElement.id,'sleep-select','休眠時間保存後維持原控制焦點');
+}
+ctx.window.render(state);
+console.log('PASS hidden sleep bilingual copy, explicit IPC, persistence acknowledgement, focus and disabled duration');
 const before = sent.length;
 document.getElementById('resize-grip').onpointerdown({button:2});
 assert.equal(sent.length, before, '右鍵不可開始調整大小');

@@ -19,6 +19,9 @@ pub enum Command {
     SetSleep {
         minutes: u16,
     },
+    SetSleepWhenHidden {
+        enabled: bool,
+    },
     Add {
         address: String,
     },
@@ -114,6 +117,34 @@ fn document() -> String {
 #[cfg(test)]
 mod tests {
     use super::super::browser::{RAIL_WIDTH, STATUS_HEIGHT, TOOLBAR_HEIGHT};
+
+    #[test]
+    fn sleep_when_hidden_command_accepts_only_an_explicit_boolean() {
+        for enabled in [false, true] {
+            let command = serde_json::from_value::<super::Command>(serde_json::json!({
+                "action": "set_sleep_when_hidden",
+                "enabled": enabled,
+            }))
+            .unwrap();
+            assert!(
+                matches!(command, super::Command::SetSleepWhenHidden { enabled: actual } if actual == enabled)
+            );
+        }
+        for invalid in [
+            serde_json::json!({"action": "set_sleep_when_hidden"}),
+            serde_json::json!({"action": "set_sleep_when_hidden", "enabled": null}),
+            serde_json::json!({"action": "set_sleep_when_hidden", "enabled": "true"}),
+            serde_json::json!({"action": "set_sleep_when_hidden", "enabled": 1}),
+            serde_json::json!({"action": "set_sleep_when_hidden", "enabled": []}),
+            serde_json::json!({"action": "set_sleep_when_hidden", "enabled": {}}),
+            serde_json::json!({"action": "set_sleep_when_hidden", "enabled": true, "extra": 1}),
+        ] {
+            assert!(
+                serde_json::from_value::<super::Command>(invalid.clone()).is_err(),
+                "不完整或含額外欄位的命令應被拒絕：{invalid}"
+            );
+        }
+    }
 
     /// 原生網頁視圖的位置由 Rust 常數決定，控制面板由 CSS 決定；兩邊不一致時網頁會蓋住工具列或留下空隙。
     #[test]

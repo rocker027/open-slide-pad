@@ -11,6 +11,10 @@ fn default_sleep_after_minutes() -> u16 {
     15
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 fn default_top_offset() -> f64 {
     8.0
 }
@@ -178,6 +182,8 @@ pub struct Settings {
     pub hot_edge: bool,
     #[serde(default = "default_sleep_after_minutes")]
     pub sleep_after_minutes: u16,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sleep_when_hidden: bool,
     #[serde(default)]
     pub toggle_shortcut: Shortcut,
     /// 本版不認得的頂層欄位。原樣保留並寫回，舊版開過新版設定後不會把新欄位洗掉。
@@ -200,6 +206,7 @@ impl Default for Settings {
             pinned: false,
             hot_edge: true,
             sleep_after_minutes: default_sleep_after_minutes(),
+            sleep_when_hidden: false,
             toggle_shortcut: Shortcut::default(),
             unknown_fields: BTreeMap::new(),
         }
@@ -368,6 +375,56 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn sleep_when_hidden_defaults_to_false_and_round_trips_without_a_version_change() {
+        let old = serde_json::to_value(super::Settings::default()).unwrap();
+        assert!(old.get("sleep_when_hidden").is_none());
+        let loaded: super::Settings = serde_json::from_value(old).unwrap();
+        assert!(!loaded.sleep_when_hidden);
+        for enabled in [false, true] {
+            let settings = super::Settings {
+                sleep_when_hidden: enabled,
+                ..Default::default()
+            };
+            settings.validate().unwrap();
+            let encoded = serde_json::to_value(&settings).unwrap();
+            assert_eq!(encoded["version"], 1);
+            assert_eq!(
+                encoded.get("sleep_when_hidden"),
+                enabled.then_some(&serde_json::Value::Bool(true))
+            );
+            assert_eq!(
+                serde_json::from_value::<super::Settings>(encoded.clone()).unwrap(),
+                settings
+            );
+            // 明確寫入 false 的設定也可讀取；下次保存才省略預設值。
+            let mut explicit = encoded;
+            explicit["sleep_when_hidden"] = serde_json::Value::Bool(enabled);
+            assert_eq!(
+                serde_json::from_value::<super::Settings>(explicit).unwrap(),
+                settings
+            );
+        }
+    }
+
+    #[test]
+    fn sleep_when_hidden_rejects_non_boolean_values() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut encoded = serde_json::to_value(super::Settings::default()).unwrap();
+            encoded["sleep_when_hidden"] = value.clone();
+            assert!(
+                serde_json::from_value::<super::Settings>(encoded).is_err(),
+                "非布林設定應被拒絕：{value}"
+            );
+        }
+    }
+
+    #[test]
     fn old_settings_default_to_fifteen_minutes_and_supported_durations_round_trip() {
         let mut old = serde_json::to_value(super::Settings::default()).unwrap();
         old.as_object_mut().unwrap().remove("sleep_after_minutes");
@@ -482,6 +539,7 @@ mod tests {
     #[test]
     fn unknown_top_level_fields_are_kept_while_nested_unknown_fields_are_rejected() {
         let mut json = serde_json::to_value(Settings::default().add("a.com").unwrap()).unwrap();
+        json["sleep_when_hidden"] = serde_json::json!(true);
         json["future_feature"] = serde_json::json!({"enabled": true, "items": [1, 2]});
         let loaded: Settings = serde_json::from_value(json.clone()).unwrap();
         loaded.validate().unwrap();
@@ -501,6 +559,7 @@ mod tests {
         let displayed = serde_json::from_value::<Settings>(hostile)
             .unwrap()
             .without_unknown_fields();
+        assert!(displayed.sleep_when_hidden);
         let mut expected = json.clone();
         expected.as_object_mut().unwrap().remove("future_feature");
         assert_eq!(serde_json::to_value(&displayed).unwrap(), expected);

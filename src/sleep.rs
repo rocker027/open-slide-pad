@@ -1,7 +1,12 @@
-//! 后台分页的休眠计时；只记录最后一次离开前台的时间。
+//! 分頁休眠計時；選取中的網站可選擇在側欄收起時一併計時。
 use std::time::{Duration, Instant};
 
 pub const SLEEP_RECHECK: Duration = Duration::from_secs(30);
+
+/// 只有選取中的網站需要保護；啟用收起後休眠時，保護隨側欄可見狀態切換。
+pub fn keep_awake(selected: bool, visible: bool, sleep_when_hidden: bool) -> bool {
+    selected && (visible || !sleep_when_hidden)
+}
 
 #[derive(Default)]
 pub struct SleepTimer {
@@ -9,8 +14,8 @@ pub struct SleepTimer {
 }
 
 impl SleepTimer {
-    pub fn update(&mut self, active: bool, now: Instant) {
-        if active {
+    pub fn update(&mut self, kept_awake: bool, now: Instant) {
+        if kept_awake {
             self.background_since = None;
         } else {
             self.background_since.get_or_insert(now);
@@ -44,6 +49,72 @@ impl SleepTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_selected_tab_only_counts_down_after_opt_in() {
+        let now = Instant::now();
+        let mut timer = SleepTimer::default();
+        for visible in [true, false] {
+            timer.update(keep_awake(true, visible, false), now);
+            assert_eq!(timer.next_check(5, now), None);
+        }
+        timer.update(keep_awake(true, true, true), now);
+        assert_eq!(timer.deadline(5), None);
+        let hidden = now + Duration::from_secs(20);
+        timer.update(keep_awake(true, false, true), hidden);
+        assert_eq!(
+            timer.next_check(5, hidden),
+            Some(hidden + Duration::from_secs(300))
+        );
+        // 重複收起或背景事件不能把倒數往後延。
+        timer.update(
+            keep_awake(true, false, true),
+            hidden + Duration::from_secs(200),
+        );
+        assert!(!timer.due(5, hidden + Duration::from_secs(299)));
+        assert!(timer.due(5, hidden + Duration::from_secs(300)));
+        assert_eq!(timer.next_check(0, hidden), None);
+        assert!(!timer.due(0, hidden + Duration::from_secs(1000)));
+    }
+
+    #[test]
+    fn reopening_or_disabling_hidden_sleep_cancels_the_selected_countdown() {
+        let now = Instant::now();
+        let mut timer = SleepTimer::default();
+        timer.update(keep_awake(true, false, true), now);
+        timer.update(keep_awake(true, true, true), now + Duration::from_secs(200));
+        assert_eq!(timer.deadline(5), None);
+        let hidden_again = now + Duration::from_secs(240);
+        timer.update(keep_awake(true, false, true), hidden_again);
+        assert!(!timer.due(5, now + Duration::from_secs(300)));
+        assert_eq!(
+            timer.deadline(5),
+            Some(hidden_again + Duration::from_secs(300))
+        );
+        timer.update(
+            keep_awake(true, false, false),
+            now + Duration::from_secs(250),
+        );
+        assert_eq!(timer.deadline(5), None);
+    }
+
+    #[test]
+    fn background_countdown_survives_visibility_and_hidden_sleep_changes() {
+        let now = Instant::now();
+        let mut timer = SleepTimer::default();
+        for (offset, visible, enabled) in [
+            (0, true, false),
+            (30, false, true),
+            (60, true, true),
+            (90, false, false),
+        ] {
+            timer.update(
+                keep_awake(false, visible, enabled),
+                now + Duration::from_secs(offset),
+            );
+            assert_eq!(timer.deadline(5), Some(now + Duration::from_secs(300)));
+        }
+    }
 
     #[test]
     fn only_background_tabs_sleep_at_the_configured_deadline() {

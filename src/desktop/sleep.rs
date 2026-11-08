@@ -2,7 +2,11 @@
 use super::{App, browser, pad::BrowserPad};
 use anyhow::{Context, Result};
 use objc2::{rc::Retained, runtime::AnyObject};
-use sliderust::{load::LoadWatch, model::web_url, sleep::SleepTimer};
+use sliderust::{
+    load::LoadWatch,
+    model::web_url,
+    sleep::{SleepTimer, keep_awake},
+};
 use std::time::Instant;
 use wry::WebViewExtMacOS;
 
@@ -13,6 +17,27 @@ pub(super) struct SleepingPad {
 }
 
 impl App {
+    pub(super) fn keeps_pad_awake(&self, id: u64) -> bool {
+        keep_awake(
+            self.settings.active == Some(id),
+            self.visible,
+            self.settings.sleep_when_hidden,
+        )
+    }
+
+    pub(super) fn update_sleep_timers(&mut self, now: Instant) {
+        for (id, pad) in &mut self.pads {
+            pad.sleep.update(
+                keep_awake(
+                    self.settings.active == Some(*id),
+                    self.visible,
+                    self.settings.sleep_when_hidden,
+                ),
+                now,
+            );
+        }
+    }
+
     pub(super) fn live_view_mut(&mut self, view_id: u64) -> Option<&mut BrowserPad> {
         self.pads.values_mut().find(|pad| pad.view_id == view_id)
     }
@@ -66,7 +91,7 @@ impl App {
     pub(super) fn sleep_wake(&self, now: Instant) -> Option<Instant> {
         self.pads
             .iter()
-            .filter(|(id, _)| self.settings.active != Some(**id))
+            .filter(|(id, _)| !self.keeps_pad_awake(**id))
             .filter_map(|(_, pad)| pad.sleep.next_check(self.settings.sleep_after_minutes, now))
             .min()
     }
@@ -74,7 +99,7 @@ impl App {
     pub(super) fn sleep_background(&mut self, now: Instant) -> Result<bool> {
         let mut snapshots = Vec::new();
         for (id, pad) in &self.pads {
-            if self.settings.active == Some(*id)
+            if self.keeps_pad_awake(*id)
                 || !pad.sleep.due(self.settings.sleep_after_minutes, now)
                 || pad.load.failure().is_some()
             {

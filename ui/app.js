@@ -526,7 +526,14 @@ function renderSettings(element) {
     sleepSelect.value = String(snapshot.settings.sleep_after_minutes ?? 15);
     send('set_sleep', {minutes});
   };
-  more.append(row(t('背景分頁休眠'), t('閒置後釋放記憶體；目前分頁保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。'), sleepSelect));
+  more.append(row(t('背景分頁休眠'), t('背景網站閒置後釋放記憶體。側欄展開時，目前網站保持運作。恢復時重新載入，未提交的輸入內容或即時狀態可能無法保留。'), sleepSelect));
+  const hiddenSleepToggle = toggle(t('收起後也休眠'), Boolean(settings.sleep_when_hidden), 'set_sleep_when_hidden');
+  hiddenSleepToggle.disabled = (settings.sleep_after_minutes ?? 15) === 0;
+  hiddenSleepToggle.onclick = () => send('set_sleep_when_hidden', {enabled:!Boolean(snapshot.settings.sleep_when_hidden)});
+  const hiddenSleepDescription = t('側欄收起後，目前網站也會依上方時間休眠。重新開啟側欄時會重新載入。播放、即時連線與未提交的輸入可能無法保留，cookies 會保留。');
+  more.append(row(t('收起後也休眠'), hiddenSleepToggle.disabled
+    ? `${t('請先選擇休眠時間，才能調整此設定。')} ${hiddenSleepDescription}`
+    : hiddenSleepDescription, hiddenSleepToggle));
   const widthLabel = text('label', t('側欄寬度'), 'field width-label');
   widthLabel.htmlFor = 'sidebar-width';
   const widthValue = text('output', `${settings.width} pt`);

@@ -1,5 +1,5 @@
 //! 本机 HTTP fixture 验证实际 WebView 释放与会话恢复，不操作用户网站。
-use super::{App, Event, browser, chrome::Command};
+use super::{App, Event, OpenedBy, browser, chrome::Command};
 use anyhow::{Context, Result, ensure};
 use objc2::rc::Weak;
 use std::{
@@ -72,6 +72,12 @@ enum Stage {
     Released,
     Restored,
     Result,
+    HiddenReleased,
+    ToggleRestored,
+    SettingsOverlay,
+    SettingsRestored,
+    NewPadOverlay,
+    HiddenResult,
 }
 
 pub(super) struct Probe {
@@ -123,6 +129,7 @@ impl Probe {
         match self.stage {
             Stage::Ready if app.chrome_ready && app.page_loaded => {
                 self.source = app.settings.active.context("smoke 網站不存在")?;
+                ensure!(!app.settings.sleep_when_hidden, "收起後休眠預設應關閉");
                 app.handle(Event::Command(Command::ShowSettings), flow)?;
                 app.chrome.evaluate_script("(() => { const select = document.getElementById('sleep-select'); select.value = '30'; select.dispatchEvent(new Event('change')); })()")?;
                 self.stage = Stage::Settings;
@@ -262,8 +269,79 @@ impl Probe {
                     !app.sleeping.contains_key(&background) && !app.pads.contains_key(&background),
                     "關閉休眠分頁未釋放快照"
                 );
+                app.hide();
+                ensure!(
+                    !app.visible
+                        && app.sleep_wake(Instant::now()).is_none()
+                        && !app.sleep_background(Instant::now() + Duration::from_secs(10000))?
+                        && app.pads.contains_key(&self.source),
+                    "預設關閉時，收起的目前網站應保留"
+                );
+                app.show(OpenedBy::Request)?;
+                app.handle(
+                    Event::Command(Command::SetSleepWhenHidden { enabled: true }),
+                    flow,
+                )?;
+                ensure!(
+                    app.settings.sleep_when_hidden && app.store.load()?.sleep_when_hidden,
+                    "收起後休眠開關未保存"
+                );
+                app.handle(Event::Command(Command::SetSleep { minutes: 0 }), flow)?;
+                app.hide();
+                ensure!(
+                    app.sleep_wake(Instant::now()).is_none()
+                        && !app.sleep_background(Instant::now() + Duration::from_secs(10000))?
+                        && app.pads.contains_key(&self.source),
+                    "休眠時間為零時，不應休眠收起的目前網站"
+                );
+                app.handle(Event::Command(Command::SetSleep { minutes: 5 }), flow)?;
+                self.sleep_hidden_current(app)?;
+                self.stage = Stage::HiddenReleased;
+            }
+            Stage::HiddenReleased if self.native_released() => {
+                let next_view_id = app.next_view_id;
+                app.handle(Event::Title(self.old_view_id, "hidden stale".into()), flow)?;
+                app.handle(
+                    Event::Load(self.old_view_id, true, "https://example.com/stale".into()),
+                    flow,
+                )?;
+                app.handle(Event::Crashed(self.old_view_id), flow)?;
+                app.handle(Event::Command(Command::Overlay { open: false }), flow)?;
+                app.handle(Event::Command(Command::SetSleep { minutes: 5 }), flow)?;
+                ensure!(
+                    !app.visible
+                        && !app.pads.contains_key(&self.source)
+                        && app.sleeping.contains_key(&self.source)
+                        && app.next_view_id == next_view_id,
+                    "背景回呼或設定更新喚醒了收起的目前網站"
+                );
+                app.handle(Event::Toggle, flow)?;
+                self.verify_fresh_current(app)?;
+                self.stage = Stage::ToggleRestored;
+            }
+            Stage::ToggleRestored if self.current_loaded(app) => {
+                ensure!(
+                    !app.sleep_background(Instant::now() + Duration::from_secs(10000))?,
+                    "展開時目前網站不應休眠"
+                );
+                self.sleep_hidden_current(app)?;
+                self.stage = Stage::SettingsOverlay;
+            }
+            Stage::SettingsOverlay if self.native_released() => {
+                self.verify_overlay_restore(app, flow, Command::ShowSettings)?;
+                self.stage = Stage::SettingsRestored;
+            }
+            Stage::SettingsRestored if self.current_loaded(app) => {
+                self.sleep_hidden_current(app)?;
+                self.stage = Stage::NewPadOverlay;
+            }
+            Stage::NewPadOverlay if self.native_released() => {
+                self.verify_overlay_restore(app, flow, Command::NewPad)?;
+                self.stage = Stage::HiddenResult;
+            }
+            Stage::HiddenResult if self.current_loaded(app) => {
                 eprintln!(
-                    "SLEEP SMOKE settings_ipc=true settings_persistence=true failed_save_preserved=true hidden_sleep_deadline=true background_sleep=true active_preserved=true native_webview_released=true fresh_generation=true stale_callbacks_ignored=true restored_url=true restored_history=true restored_scroll=true disable_sleep=true invalid_setting_preserved=true sleeping_close=true"
+                    "SLEEP SMOKE settings_ipc=true settings_persistence=true failed_save_preserved=true hidden_sleep_deadline=true background_sleep=true active_preserved=true native_webview_released=true fresh_generation=true stale_callbacks_ignored=true restored_url=true restored_history=true restored_scroll=true disable_sleep=true invalid_setting_preserved=true sleeping_close=true hidden_default_off=true hidden_setting_persistence=true hidden_failed_save_preserved=true hidden_disabled_sleep=true hidden_active_deadline=true hidden_active_released=true hidden_callbacks_ignored=true hidden_toggle_restored=true hidden_settings_deferred=true hidden_new_pad_deferred=true"
                 );
                 *flow = ControlFlow::Exit;
             }
@@ -271,6 +349,90 @@ impl Probe {
         }
         Ok(())
     }
+
+    fn native_released(&self) -> bool {
+        self.weak.as_ref().is_some_and(|weak| weak.load().is_none())
+    }
+
+    fn current_loaded(&self, app: &App) -> bool {
+        app.pads
+            .get(&self.source)
+            .is_some_and(|pad| !pad.load.is_loading() && unsafe { !pad.view.webview().isLoading() })
+    }
+
+    fn sleep_hidden_current(&mut self, app: &mut App) -> Result<()> {
+        self.old_view_id = app.pads[&self.source].view_id;
+        self.weak = Some(Weak::from_retained(&app.pads[&self.source].view.webview()));
+        app.hide();
+        let deadline = app
+            .sleep_wake(Instant::now())
+            .context("收起的目前網站缺少休眠排程")?;
+        app.hide();
+        app.sync_views()?;
+        ensure!(
+            app.sleep_wake(Instant::now()) == Some(deadline),
+            "重複收起或同步延後了休眠計時"
+        );
+        verify_hidden_deadline(app, deadline)?;
+        ensure!(
+            !app.sleep_background(deadline - Duration::from_millis(1))?,
+            "收起的目前網站提早休眠"
+        );
+        ensure!(
+            app.sleep_background(deadline + Duration::from_secs(1))?
+                && !app.pads.contains_key(&self.source)
+                && app.sleeping.contains_key(&self.source),
+            "收起的目前網站到期後未釋放 WebView"
+        );
+        Ok(())
+    }
+
+    fn verify_fresh_current(&self, app: &App) -> Result<()> {
+        ensure!(
+            app.visible
+                && app.pads.get(&self.source).is_some_and(|pad| {
+                    pad.view_id != self.old_view_id
+                        && pad.title != "hidden stale"
+                        && pad.load.failure().is_none()
+                })
+                && !app.sleeping.contains_key(&self.source),
+            "展開未以新世代恢復目前網站"
+        );
+        Ok(())
+    }
+
+    fn verify_overlay_restore(
+        &self,
+        app: &mut App,
+        flow: &mut ControlFlow,
+        command: Command,
+    ) -> Result<()> {
+        let next_view_id = app.next_view_id;
+        app.handle(Event::Command(command), flow)?;
+        ensure!(
+            app.visible
+                && app.overlay
+                && !app.pads.contains_key(&self.source)
+                && app.sleeping.contains_key(&self.source)
+                && app.next_view_id == next_view_id,
+            "只開啟覆蓋畫面卻提前重建了目前網站"
+        );
+        app.handle(Event::Command(Command::Overlay { open: false }), flow)?;
+        self.verify_fresh_current(app)
+    }
+}
+
+fn verify_hidden_deadline(app: &mut App, deadline: Instant) -> Result<()> {
+    let original = (app.settings.hot_edge, app.smoke, app.animation.take());
+    app.settings.hot_edge = false;
+    app.smoke = false;
+    let scheduled = app.next_wake();
+    (app.settings.hot_edge, app.smoke, app.animation) = original;
+    ensure!(
+        matches!(scheduled, ControlFlow::WaitUntil(at) if at == deadline),
+        "收起且停用 hot edge 時，目前網站未保留到期排程"
+    );
+    Ok(())
 }
 
 fn verify_failed_save(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
@@ -286,8 +448,16 @@ fn verify_failed_save(app: &mut App, flow: &mut ControlFlow) -> Result<()> {
     let permissions = fs::metadata(&root)?.permissions();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o500))?;
     let result = app.handle(Event::Command(Command::SetSleep { minutes: 60 }), flow);
+    let hidden_result = app.handle(
+        Event::Command(Command::SetSleepWhenHidden { enabled: true }),
+        flow,
+    );
     fs::set_permissions(&root, permissions)?;
     ensure!(result.is_err(), "唯讀目錄必須拒絕休眠設定保存");
+    ensure!(
+        hidden_result.is_err() && !app.settings.sleep_when_hidden,
+        "收起後休眠保存失敗卻啟用了開關"
+    );
     ensure!(
         app.settings == saved
             && app.store.load()? == saved
